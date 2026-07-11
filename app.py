@@ -57,7 +57,7 @@ if not st.session_state['authenticated']:
         input_pass = st.text_input("Password Akses", type="password")
         btn_login = st.button("Verifikasi Lisensi Akun")
         
-            if btn_login:
+        if btn_login:
             if not input_user or not input_pass:
                 st.error("Gagal: Username dan password wajib diisi.")
             else:
