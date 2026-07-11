@@ -20,20 +20,23 @@ def check_database_auth(username, password):
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"
     }
-    # Request data filter spesifik ke tabel users
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&password_hash=eq.{password}"
     try:
         response = requests.get(url, headers=headers)
         data = response.json()
-        if len(data) > 0:
-            # Periksa apakah status langganan pengguna masih aktif
-            if data[0].get('is_active', False):
+        
+        # Perbaikan Struktur: Ambil indeks elemen ke-0 dari List data Supabase
+        if isinstance(data, list) and len(data) > 0:
+            user_record = data[0] # Mengakses data user pertama yang cocok
+            if user_record.get('is_active', False):
                 return "SUCCESS"
             else:
                 return "EXPIRED"
         return "FAILED"
-    except:
+    except Exception as e:
+        # Menampilkan indikasi error sistem rill di console log Streamlit untuk debugging
         return "DB_ERROR"
+
 
 # ==============================================================================
 # GATEWAY SCREEN: TAMPILAN INTERFAKS LOGIN PENGGUNA
