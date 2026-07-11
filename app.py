@@ -98,13 +98,7 @@ if st.sidebar.button("Keluar Sistem (Log Out)"):
 # Taruh sisa kode lengkap gabungan NRTL & Peng-Robinson yang kemarin tepat di bawah baris ini...
 
 
-import streamlit as st
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.optimize import bisect
 
-# Set konfigurasi layout dashboard industri
-st.set_page_config(layout="wide", page_title="PREMIUM PROCESS ENGINEERING SIMULATOR")
 
 # ==============================================================================
 # 1. COMPREHENSIVE RIGOROUS HANDBOOK DATABASE (NIST / YAWS / DECHEMA)
