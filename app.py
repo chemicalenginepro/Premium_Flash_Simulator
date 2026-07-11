@@ -25,18 +25,20 @@ def check_database_auth(username, password):
         response = requests.get(url, headers=headers)
         data = response.json()
         
-        # Perbaikan Struktur: Ambil indeks elemen ke-0 dari List data Supabase
+        # JIKA SERVER MEMBALAS DENGAN ERROR DICTIONARY (Bukan List)
+        if isinstance(data, dict) and "message" in data:
+            return f"SERVER_ERROR: {data['message']}"
+            
+        # JIKA SERVER BERHASIL MENGEMBALIKAN DATA LIST USER
         if isinstance(data, list) and len(data) > 0:
-            user_record = data[0] # Mengakses data user pertama yang cocok
+            user_record = data[0]
             if user_record.get('is_active', False):
                 return "SUCCESS"
             else:
                 return "EXPIRED"
         return "FAILED"
     except Exception as e:
-        # Menampilkan indikasi error sistem rill di console log Streamlit untuk debugging
-        return "DB_ERROR"
-
+        return f"KONEKSI_ERROR: {str(e)}"
 
 # ==============================================================================
 # GATEWAY SCREEN: TAMPILAN INTERFAKS LOGIN PENGGUNA
@@ -55,7 +57,7 @@ if not st.session_state['authenticated']:
         input_pass = st.text_input("Password Akses", type="password")
         btn_login = st.button("Verifikasi Lisensi Akun")
         
-        if btn_login:
+                if btn_login:
             if not input_user or not input_pass:
                 st.error("Gagal: Username dan password wajib diisi.")
             else:
@@ -69,8 +71,9 @@ if not st.session_state['authenticated']:
                 elif auth_status == "FAILED":
                     st.error("Gagal: Kombinasi Username/Password tidak valid atau belum terdaftar.")
                 else:
-                    st.error("Gagal: Terjadi gangguan koneksi keamanan pada database server.")
-                    
+                    # MENAMPILKAN PESAN ERROR ASLI DARI SUPABASE DI LAYAR WEB STREAMLIT
+                    st.error(f"Terjadi Gangguan Sistem: {auth_status}")
+
     with col_r:
         st.subheader("Belum Memiliki Akun / Lisensi?")
         st.markdown("""
