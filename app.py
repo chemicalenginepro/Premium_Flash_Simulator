@@ -11,8 +11,8 @@ st.set_page_config(layout="wide", page_title="PREMIUM PROCESS ENGINEERING SIMULA
 # SECURE CONFIGURATION: KONEKSI DATABASE SUPABASE
 # ==============================================================================
 # GANTI DENGAN DATA API KEY ANDA SENDIRI DARI LANGKAH 2
-SUPABASE_URL = "https://supabase.co"  # <--- Ganti ini
-SUPABASE_KEY = "eyJhbGciOi..."            # <--- Ganti ini
+SUPABASE_URL = "https://mdlwswglvslxnwymvueq.supabase.co"  # <--- Ganti ini
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kbHdzd2dsdnNseG53eW12dWVxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MDgzODIsImV4cCI6MjA5OTI4NDM4Mn0.mrnY9pYigBcnIR_Sjt68ja-Ipjsq8a7Sklli72Y-5Rw"            # <--- Ganti ini
 
 def check_database_auth(username, password):
     """Memverifikasi username, password, dan status aktif langganan ke Cloud Database."""
