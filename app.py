@@ -10,9 +10,8 @@ st.set_page_config(layout="wide", page_title="PREMIUM PROCESS ENGINEERING SIMULA
 # ==============================================================================
 # SECURE CONFIGURATION: KONEKSI DATABASE SUPABASE
 # ==============================================================================
-# GANTI DENGAN DATA API KEY ANDA SENDIRI DARI LANGKAH 2
-SUPABASE_URL = "https://mdlwswglvslxnwymvueq.supabase.co"  # <--- Ganti ini
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kbHdzd2dsdnNseG53eW12dWVxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MDgzODIsImV4cCI6MjA5OTI4NDM4Mn0.mrnY9pYigBcnIR_Sjt68ja-Ipjsq8a7Sklli72Y-5Rw"            # <--- Ganti ini
+SUPABASE_URL = "https://mdlwswglvslxnwymvueq.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kbHdzd2dsdnNseG53eW12dWVxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MDgzODIsImV4cCI6MjA5OTI4NDM4Mn0.mrnY9pYigBcnIR_Sjt68ja-Ipjsq8a7Sklli72Y-5Rw"
 
 def check_database_auth(username, password):
     """Memverifikasi username, password, dan status aktif langganan ke Cloud Database."""
@@ -25,11 +24,9 @@ def check_database_auth(username, password):
         response = requests.get(url, headers=headers)
         data = response.json()
         
-        # JIKA SERVER MEMBALAS DENGAN ERROR DICTIONARY (Bukan List)
         if isinstance(data, dict) and "message" in data:
             return f"SERVER_ERROR: {data['message']}"
             
-        # JIKA SERVER BERHASIL MENGEMBALIKAN DATA LIST USER
         if isinstance(data, list) and len(data) > 0:
             user_record = data[0]
             if user_record.get('is_active', False):
@@ -47,7 +44,7 @@ if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
 
 if not st.session_state['authenticated']:
-    st.title("ðŸ”’ ACCESS RESTRICTED - PREMIUM SIMULATOR")
+    st.title("🔒 ACCESS RESTRICTED - PREMIUM SIMULATOR")
     st.markdown("Platform ini hanya dapat diakses oleh pengguna terverifikasi/berlangganan.")
     
     col_l, col_r = st.columns(2)
@@ -71,7 +68,6 @@ if not st.session_state['authenticated']:
                 elif auth_status == "FAILED":
                     st.error("Gagal: Kombinasi Username/Password tidak valid atau belum terdaftar.")
                 else:
-                    # MENAMPILKAN PESAN ERROR ASLI DARI SUPABASE DI LAYAR WEB STREAMLIT
                     st.error(f"Terjadi Gangguan Sistem: {auth_status}")
 
     with col_r:
@@ -80,24 +76,20 @@ if not st.session_state['authenticated']:
         Untuk mendapatkan akses instan (Username & Password) ke platform komersial ini, 
         silakan selesaikan administrasi pembelian/langganan Anda pada tautan resmi etalase kami di bawah ini:
         
-        ðŸ‘‰ **Beli Akses Lisensi di Sini:** [lynk.id/username-anda]
+        👉 **Beli Akses Lisensi di Sini:** [lynk.id/username-anda]
         """)
-    st.stop()  # Hentikan seluruh sisa eksekusi kode di bawah jika belum login sukses
+    st.stop()
 
 # ------------------------------------------------------------------------------
-# TOMBOL LOGOUT DI SIDEBAR (Hanya muncul jika sudah login sukses)
+# TOMBOL LOGOUT DI SIDEBAR
 # ------------------------------------------------------------------------------
-st.sidebar.markdown(f"ðŸ‘¤ Pengguna: **{st.session_state['username']}**")
+st.sidebar.markdown(f"👤 Pengguna: **{st.session_state['username']}**")
 if st.sidebar.button("Keluar Sistem (Log Out)"):
     st.session_state['authenticated'] = False
     st.rerun()
 
 # ==============================================================================
-# LANJUTAN KODE UTAMA ANDA (MASTER_DB, SOLVER NRTL, PR, STREAMLIT UI UTAMA, DLL.)
-# ==============================================================================
-# ==============================================================================
-# 1. COMPREHENSIVE RIGOROUS HANDBOOK DATABASE (NIST / YAWS / DECHEMA)
-# Standar data hulu kimia & migas disatukan dalam satu struktur matriks aman
+# 1. COMPREHENSIVE RIGOROUS HANDBOOK DATABASE
 # ==============================================================================
 MASTER_DB = {
     'BENZENE': {
@@ -137,15 +129,15 @@ MASTER_DB = {
     }
 }
 
-# Parameter Interaksi Biner Khas NRTL untuk sistem non-ideal Etanol-Air (J/mol)
+# Parameter Interaksi Biner Khas NRTL
 NRTL_DG_12 = 3450.4
 NRTL_DG_21 = -359.8
 NRTL_ALPHA = 0.300
-R_IDEAL = 8.314462  # J/mol.K
-R_CUBIC = 8.314462e-5  # m3.bar/mol.K
+R_IDEAL = 8.314462
+R_CUBIC = 8.314462e-5
 
 # ==============================================================================
-# 2. MODULE A: RIGOROUS CHEMICAL & AZEOTROPIC NRTL ENGINE
+# 2. MODULE A: NRTL ENGINE
 # ==============================================================================
 def calculate_nrtl_gamma(x_vec, T_kelvin):
     x1 = max(x_vec[0], 1e-12)
@@ -162,7 +154,6 @@ def calculate_nrtl_gamma(x_vec, T_kelvin):
 
 def get_antoine_psat(comp, T_kelvin):
     db = MASTER_DB[comp]
-    # Konversi untuk penyesuaian basis parameter Antoine lokal/NIST
     if comp in ['ETHANOL', 'WATER']:
         return 10**(db['A'] - (db['B'] / (T_kelvin + db['C'])))
     else:
@@ -176,7 +167,6 @@ def solve_nrtl_flash(F, P, T_flash, T_feed, components, z):
     T_k = T_flash + 273.15
     P_sat = np.array([get_antoine_psat(c, T_k) for c in components])
     
-    # Pendekatan iteratif loop-tunggal atau ganda tergantung jumlah biner komponen
     x = z.copy()
     is_binary_nrtl = (len(components) == 2 and 'ETHANOL' in components and 'WATER' in components)
     
@@ -213,7 +203,6 @@ def solve_nrtl_flash(F, P, T_flash, T_feed, components, z):
 
     V, L = psi * F, F - (psi * F)
     
-    # Perhitungan energi sensitif dan laten termal
     Q_sens, Q_lat = 0.0, 0.0
     F_mols, V_mols = (F * 1000) / 3600, (V * 1000) / 3600
     T_f_k = T_feed + 273.15
@@ -226,7 +215,7 @@ def solve_nrtl_flash(F, P, T_flash, T_feed, components, z):
     return psi, V, L, x, y, K, regime, (Q_sens + Q_lat) / 1000, gamma, P_sat
 
 # ==============================================================================
-# 3. MODULE B: HIGH-PRESSURE CUBIC PENG-ROBINSON ENGINE
+# 3. MODULE B: PENG-ROBINSON ENGINE
 # ==============================================================================
 def calculate_pr_alpha(T_k, Tc, omega):
     Tr = T_k / Tc
@@ -274,7 +263,6 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
     T_k = T_flash + 273.15
     a_params, b_params = solve_pr_vectors(components, T_k)
     
-    # Inisialisasi K menggunakan persamaan estimasi Wilson
     K = np.array([(db['Pc']/P) * np.exp(5.37 * (1 + db['omega']) * (1 - db['Tc']/T_k)) for db in [MASTER_DB[c] for c in components]])
     x, y = z.copy(), z.copy()
     psi = 0.0
@@ -329,26 +317,37 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
     return psi, V, L, x, y, K, regime, Z_L, Z_V
 
 # ==============================================================================
-# 4. INTERACTIVE FRONTEND APPLICATION GATEWAY (PERBAIKAN POSISI STRUKTUR SIDEBAR)
+# 4. INTERACTIVE FRONTEND APPLICATION (DENGAN FIX UNTUK PERGANTIAN MODE)
 # ==============================================================================
-st.title("âš¡ SIMULATOR FLASH INTEGRAL PARIPURNA â€” CORES GABUNGAN NRTL & PENG-ROBINSON")
+st.title("⚡ SIMULATOR FLASH INTEGRAL PARIPURNA — CORES GABUNGAN NRTL & PENG-ROBINSON")
 st.markdown("---")
 
-model_type = st.sidebar.selectbox("PILIH MODEL TERMODINAMIKA (ENGINE)", ["NRTL (Sistem Cairan Non-Ideal/Polar)", "PENG-ROBINSON (Sistem Gas Nyata/Migas Tekanan Tinggi)"])
+# === INISIALISASI SESSION STATE UNTUK MENCEGAH CRASH ===
+if 'model_type' not in st.session_state:
+    st.session_state['model_type'] = "NRTL (Sistem Cairan Non-Ideal/Polar)"
+
+# === SIDEBAR INPUT ===
+model_type = st.sidebar.selectbox(
+    "PILIH MODEL TERMODINAMIKA (ENGINE)", 
+    ["NRTL (Sistem Cairan Non-Ideal/Polar)", "PENG-ROBINSON (Sistem Gas Nyata/Migas Tekanan Tinggi)"],
+    index=0 if "NRTL" in st.session_state['model_type'] else 1
+)
+
+# UPDATE SESSION STATE
+st.session_state['model_type'] = model_type
 
 st.sidebar.markdown("---")
-st.sidebar.header("ðŸ“‹ UTILITY & PARAMETER OPERASI")
+st.sidebar.header("📋 UTILITY & PARAMETER OPERASI")
 F = st.sidebar.number_input("Laju Massa Umpan (F) [kmol/h]", min_value=0.1, value=100.0)
 P = st.sidebar.number_input("Tekanan Alat Separator (P) [bar]", min_value=0.01, value=1.013 if "NRTL" in model_type else 12.0)
-T_flash = st.sidebar.number_input("Suhu Operasi Alat (T_flash) [Â°C]", value=78.2 if "NRTL" in model_type else 55.0)
+T_flash = st.sidebar.number_input("Suhu Operasi Alat (T_flash) [°C]", value=78.2 if "NRTL" in model_type else 55.0)
 
 T_feed = 25.0
 if "NRTL" in model_type:
-    T_feed = st.sidebar.number_input("Suhu Masuk Umpan (T_feed) [Â°C]", value=25.0)
+    T_feed = st.sidebar.number_input("Suhu Masuk Umpan (T_feed) [°C]", value=25.0)
 
-# KODE RE-POSITIONING: DEKLARASI DAFTAR KOMPONEN DULU AGAR TIDAK HILANG SAAT RE-RUN
 st.sidebar.markdown("---")
-st.sidebar.header("ðŸ§ª INPUT SPECIES COMPONENT")
+st.sidebar.header("🧪 INPUT SPECIES COMPONENT")
 if "NRTL" in model_type:
     available_comps = ['ETHANOL', 'WATER', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
     default_comps = ['ETHANOL', 'WATER']
@@ -358,14 +357,13 @@ else:
 
 selected_comps = st.sidebar.multiselect("Pilih Komponen Aktif", available_comps, default=default_comps)
 
-# MASUKKAN INPUT FRAKSI z DI SINI (SEBELUM LOGIKA STOP JALAN)
 st.sidebar.subheader("Fraksi Mol Komponen Masuk (z_i)")
 z_inputs = []
 for c in selected_comps:
     val = st.sidebar.number_input(f"Fraksi z untuk {c}", min_value=0.0, max_value=1.0, value=1.0/max(len(selected_comps), 1), format="%.4f")
     z_inputs.append(val)
 
-# VALIDASI PERLINDUNGAN UTAMA (SAFEGUARD BLOCK)
+# === VALIDASI ===
 if len(selected_comps) < 2:
     st.error("SYSTEM CRITICAL ERROR: Perhitungan flash multi-komponen mewajibkan minimal 2 spesimen zat aktif.")
     st.stop()
@@ -376,21 +374,35 @@ if np.sum(z_array) == 0:
     st.stop()
 z_norm = z_array / np.sum(z_array)
 
-# Pengalihan jalur eksekusi engine kalkulasi komputasi (The Routing Router)
-if "NRTL" in model_type:
-    psi, V, L, x, y, K, regime, Q_total, gamma, P_sat = solve_nrtl_flash(F, P, T_flash, T_feed, selected_comps, z_norm)
-    Z_L, Z_V = 0.0, 0.0
-else:
-    psi, V, L, x, y, K, regime, Z_L, Z_V = solve_peng_robinson_flash(F, P, T_flash, selected_comps, z_norm)
-    Q_total, gamma, P_sat = 0.0, np.ones(len(selected_comps)), np.zeros(len(selected_comps))
+# === EKSEKUSI ENGINE DENGAN TRY-EXCEPT UNTUK KEAMANAN ===
+try:
+    if "NRTL" in model_type:
+        psi, V, L, x, y, K, regime, Q_total, gamma, P_sat = solve_nrtl_flash(F, P, T_flash, T_feed, selected_comps, z_norm)
+        Z_L, Z_V = 0.0, 0.0
+        # PASTIKAN VARIABEL UNTUK PR TETAP TERDEFINISI
+        Q_total_nrtl = Q_total
+        gamma_nrtl = gamma
+        P_sat_nrtl = P_sat
+    else:
+        psi, V, L, x, y, K, regime, Z_L, Z_V = solve_peng_robinson_flash(F, P, T_flash, selected_comps, z_norm)
+        # SET DEFAULT UNTUK VARIABEL NRTL AGAR TIDAK ERROR DI UI
+        Q_total = 0.0
+        gamma = np.ones(len(selected_comps))
+        P_sat = np.zeros(len(selected_comps))
+        Q_total_nrtl = 0.0
+        gamma_nrtl = np.ones(len(selected_comps))
+        P_sat_nrtl = np.zeros(len(selected_comps))
+        
+except Exception as e:
+    st.error(f"ERROR PERHITUNGAN: {str(e)}")
+    st.stop()
 
 # ==============================================================================
-# 5. INDUSTRIAL FRONTEND REPORT DISPLAY LAYER (PENCETAK LAYAR UTAMA)
+# 5. DISPLAY LAYER (DENGAN PENGECEKAN VARIABEL YANG AMAN)
 # ==============================================================================
-# Blok Layout KPI Grid Utama Atas Dashboard
 grid1, grid2, grid3 = st.columns(3)
 with grid1:
-    st.metric(label="VAPOR FRACTION (Ïˆ)", value=f"{psi:.6f}", delta=f"{psi*100:.2f} %")
+    st.metric(label="VAPOR FRACTION (ψ)", value=f"{psi:.6f}", delta=f"{psi*100:.2f} %")
 with grid2:
     if "NRTL" in model_type:
         st.metric(label="NET THERMAL DUTY (Q)", value=f"{Q_total:.4f} kW")
@@ -401,20 +413,21 @@ with grid3:
 
 st.markdown("---")
 
-# Pembagian Tab Visualisasi Laporan Data & Plotting Matplotlib Grafis Paralel
 left_pane, right_pane = st.columns(2)
 
 with left_pane:
-    st.subheader("ðŸ“‹ Matriks Komposisi Kesetimbangan Fase")
+    st.subheader("📋 Matriks Komposisi Kesetimbangan Fase")
     grid_rows = []
     for i, c in enumerate(selected_comps):
+        # AMAN: Gunakan variabel gamma yang sudah dipastikan terdefinisi
+        gamma_val = gamma[i] if len(gamma) > i else 1.0
         grid_rows.append({
             "Komponen": c,
             "z_i (Umpan)": f"{z_norm[i]:.4f}",
             "K_i (Eq)": f"{K[i]:.4f}",
             "x_i (Liquid)": f"{x[i]:.6f}",
             "y_i (Vapor)": f"{y[i]:.6f}",
-            "Gamma (Î³)" if "NRTL" in model_type else "Fugasitas": f"{gamma[i]:.4f}" if "NRTL" in model_type else "-"
+            "Gamma (γ)" if "NRTL" in model_type else "Fugasitas": f"{gamma_val:.4f}" if "NRTL" in model_type else "-"
         })
     grid_rows.append({
         "Komponen": "SIGMA TOTAL",
@@ -422,21 +435,17 @@ with left_pane:
         "K_i (Eq)": "-",
         "x_i (Liquid)": f"{np.sum(x):.6f}",
         "y_i (Vapor)": f"{np.sum(y):.6f}",
-        "Gamma (Î³)" if "NRTL" in model_type else "Fugasitas": "-"
+        "Gamma (γ)" if "NRTL" in model_type else "Fugasitas": "-"
     })
     st.table(grid_rows)
 
 with right_pane:
-    st.subheader("ðŸ“ˆ Diagram Batang Pergeseran Massa Fasa")
-    
-    # 1. Konstruksi Matriks Dataframe Pengganti Matplotlib secara Aman
+    st.subheader("📈 Diagram Batang Pergeseran Massa Fasa")
     chart_data = {
         "z_i (Umpan)": z_norm,
         "x_i (Liquid)": x,
         "y_i (Vapor)": y
     }
-    
-    # 2. Cetak Grafik Native Streamlit (Aman dari Multi-User Crash / SegFault)
     st.bar_chart(
         data=chart_data, 
         x=None, 
@@ -447,8 +456,7 @@ with right_pane:
 
 st.markdown("---")
 
-# Dokumentasi Laporan Audit Akhir Objektif Tanpa Narasi Kosong
-st.subheader("ðŸ”¬ Laporan Penutupan Neraca Konservasi Industri")
+st.subheader("🔬 Laporan Penutupan Neraca Konservasi Industri")
 audit_l, audit_r = st.columns(2)
 with audit_l:
     st.text_area(
@@ -456,7 +464,7 @@ with audit_l:
         value=(
             f"Aliran Produk Gas Atas (V)   : {V:.4f} kmol/h\n"
             f"Aliran Produk Cair Bawah (L) : {L:.4f} kmol/h\n"
-            f"Sum Evaluasi Akhir (Î£x / Î£y) : {np.sum(x):.6f} / {np.sum(y):.6f}\n"
+            f"Sum Evaluasi Akhir (Σx / Σy) : {np.sum(x):.6f} / {np.sum(y):.6f}\n"
             f"Verifikasi Status Sistem     : 100% AKURAT, NERACA MASSA TERTUTUP SEMPURNA"
         ), height=110
     )
