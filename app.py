@@ -335,16 +335,58 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
 # ==============================================================================
 # 4. INTERACTIVE FRONTEND APPLICATION GATEWAY (STREAMLIT LIBRARIES)
 # ==============================================================================
+# ==============================================================================
+# 4. INTERACTIVE FRONTEND APPLICATION GATEWAY (PERBAIKAN POSISI STRUKTUR SIDEBAR)
+# ==============================================================================
 st.title("⚡ SIMULATOR FLASH INTEGRAL PARIPURNA — CORES GABUNGAN NRTL & PENG-ROBINSON")
 st.markdown("---")
 
-# Seleksi Model Inti Termodinamika
 model_type = st.sidebar.selectbox("PILIH MODEL TERMODINAMIKA (ENGINE)", ["NRTL (Sistem Cairan Non-Ideal/Polar)", "PENG-ROBINSON (Sistem Gas Nyata/Migas Tekanan Tinggi)"])
 
 st.sidebar.markdown("---")
 st.sidebar.header("📋 UTILITY & PARAMETER OPERASI")
 F = st.sidebar.number_input("Laju Massa Umpan (F) [kmol/h]", min_value=0.1, value=100.0)
 P = st.sidebar.number_input("Tekanan Alat Separator (P) [bar]", min_value=0.01, value=1.013 if "NRTL" in model_type else 12.0)
+T_flash = st.sidebar.number_input("Suhu Operasi Alat (T_flash) [°C]", value=78.2 if "NRTL" in model_type else 55.0)
 
+T_feed = 25.0
+if "NRTL" in model_type:
+    T_feed = st.sidebar.number_input("Suhu Masuk Umpan (T_feed) [°C]", value=25.0)
 
+# KODE RE-POSITIONING: DEKLARASI DAFTAR KOMPONEN DULU AGAR TIDAK HILANG SAAT RE-RUN
+st.sidebar.markdown("---")
+st.sidebar.header("🧪 INPUT SPECIES COMPONENT")
+if "NRTL" in model_type:
+    available_comps = ['ETHANOL', 'WATER', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
+    default_comps = ['ETHANOL', 'WATER']
+else:
+    available_comps = ['PROPANE', 'N-BUTANE', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
+    default_comps = ['PROPANE', 'N-BUTANE']
 
+selected_comps = st.sidebar.multiselect("Pilih Komponen Aktif", available_comps, default=default_comps)
+
+# MASUKKAN INPUT FRAKSI z DI SINI (SEBELUM LOGIKA STOP JALAN)
+st.sidebar.subheader("Fraksi Mol Komponen Masuk (z_i)")
+z_inputs = []
+for c in selected_comps:
+    val = st.sidebar.number_input(f"Fraksi z untuk {c}", min_value=0.0, max_value=1.0, value=1.0/max(len(selected_comps), 1), format="%.4f")
+    z_inputs.append(val)
+
+# VALIDASI PERLINDUNGAN UTAMA (SAFEGUARD BLOCK)
+if len(selected_comps) < 2:
+    st.error("SYSTEM CRITICAL ERROR: Perhitungan flash multi-komponen mewajibkan minimal 2 spesimen zat aktif.")
+    st.stop()
+
+z_array = np.array(z_inputs)
+if np.sum(z_array) == 0:
+    st.error("INPUT EROR: Total fraksi umpan tidak boleh bernilai kosong.")
+    st.stop()
+z_norm = z_array / np.sum(z_array)
+
+# Pengalihan jalur eksekusi engine kalkulasi komputasi (The Routing Router)
+if "NRTL" in model_type:
+    psi, V, L, x, y, K, regime, Q_total, gamma, P_sat = solve_nrtl_flash(F, P, T_flash, T_feed, selected_comps, z_norm)
+    Z_L, Z_V = 0.0, 0.0
+else:
+    psi, V, L, x, y, K, regime, Z_L, Z_V = solve_peng_robinson_flash(F, P, T_flash, selected_comps, z_norm)
+    Q_total, gamma, P_sat = 0.0, np.ones(len(selected_comps)), np.zeros(len(selected_comps))
