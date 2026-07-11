@@ -47,7 +47,7 @@ if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
 
 if not st.session_state['authenticated']:
-    st.title("🔒 ACCESS RESTRICTED - PREMIUM SIMULATOR")
+    st.title("ðŸ”’ ACCESS RESTRICTED - PREMIUM SIMULATOR")
     st.markdown("Platform ini hanya dapat diakses oleh pengguna terverifikasi/berlangganan.")
     
     col_l, col_r = st.columns(2)
@@ -80,14 +80,14 @@ if not st.session_state['authenticated']:
         Untuk mendapatkan akses instan (Username & Password) ke platform komersial ini, 
         silakan selesaikan administrasi pembelian/langganan Anda pada tautan resmi etalase kami di bawah ini:
         
-        👉 **Beli Akses Lisensi di Sini:** [lynk.id/username-anda]
+        ðŸ‘‰ **Beli Akses Lisensi di Sini:** [lynk.id/username-anda]
         """)
-    st.stop() # Hentikan seluruh sisa eksekusi kode di bawah jika belum login sukses
+    st.stop()  # Hentikan seluruh sisa eksekusi kode di bawah jika belum login sukses
 
 # ------------------------------------------------------------------------------
 # TOMBOL LOGOUT DI SIDEBAR (Hanya muncul jika sudah login sukses)
 # ------------------------------------------------------------------------------
-st.sidebar.markdown(f"👤 Pengguna: **{st.session_state['username']}**")
+st.sidebar.markdown(f"ðŸ‘¤ Pengguna: **{st.session_state['username']}**")
 if st.sidebar.button("Keluar Sistem (Log Out)"):
     st.session_state['authenticated'] = False
     st.rerun()
@@ -95,11 +95,6 @@ if st.sidebar.button("Keluar Sistem (Log Out)"):
 # ==============================================================================
 # LANJUTAN KODE UTAMA ANDA (MASTER_DB, SOLVER NRTL, PR, STREAMLIT UI UTAMA, DLL.)
 # ==============================================================================
-# Taruh sisa kode lengkap gabungan NRTL & Peng-Robinson yang kemarin tepat di bawah baris ini...
-
-
-
-
 # ==============================================================================
 # 1. COMPREHENSIVE RIGOROUS HANDBOOK DATABASE (NIST / YAWS / DECHEMA)
 # Standar data hulu kimia & migas disatukan dalam satu struktur matriks aman
@@ -147,7 +142,7 @@ NRTL_DG_12 = 3450.4
 NRTL_DG_21 = -359.8
 NRTL_ALPHA = 0.300
 R_IDEAL = 8.314462  # J/mol.K
-R_CUBIC = 8.314462e-5 # m3.bar/mol.K
+R_CUBIC = 8.314462e-5  # m3.bar/mol.K
 
 # ==============================================================================
 # 2. MODULE A: RIGOROUS CHEMICAL & AZEOTROPIC NRTL ENGINE
@@ -239,15 +234,15 @@ def calculate_pr_alpha(T_k, Tc, omega):
     return (1 + kappa * (1 - np.sqrt(Tr)))**2
 
 def solve_pr_vectors(components, T_k):
-    a_p, b_p = [], []
+    a_list, b_list = [], []
     for c in components:
         db = MASTER_DB[c]
         alpha = calculate_pr_alpha(T_k, db['Tc'], db['omega'])
         a = 0.45724 * (R_CUBIC**2) * (db['Tc']**2) * alpha / db['Pc']
         b = 0.07780 * R_CUBIC * db['Tc'] / db['Pc']
-        a_p.append(a)
-        b_p.append(b)
-    return np.array(a_p), np.array(b_p)
+        a_list.append(a)
+        b_list.append(b)
+    return np.array(a_list), np.array(b_list)
 
 def mix_pr(fractions, a_p, b_p):
     b_m = np.sum(fractions * b_p)
@@ -277,11 +272,14 @@ def pr_fugacity(fractions, Z, A, B, a_p, b_p, a_m, b_m):
 
 def solve_peng_robinson_flash(F, P, T_flash, components, z):
     T_k = T_flash + 273.15
-    a_p, b_p = solve_pr_vectors(components, T_k)
+    a_params, b_params = solve_pr_vectors(components, T_k)
     
     # Inisialisasi K menggunakan persamaan estimasi Wilson
     K = np.array([(db['Pc']/P) * np.exp(5.37 * (1 + db['omega']) * (1 - db['Tc']/T_k)) for db in [MASTER_DB[c] for c in components]])
     x, y = z.copy(), z.copy()
+    psi = 0.0
+    regime = "TWO-PHASE VAPOR-LIQUID EQUILIBRIUM"
+    Z_L, Z_V = 0.0, 0.0
     
     for _ in range(150):
         f_zero = rr_objective(0, z, K)
@@ -291,14 +289,18 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
             psi, regime = 0.0, "PURE SUBCOOLED LIQUID"
             x = z.copy()
             y = z * K / np.sum(z * K)
-            Z_L = get_pr_z_roots(mix_pr(x, a_p, b_p)[0]*P/((R_CUBIC*T_k)**2), mix_pr(x, a_p, b_p)[1]*P/(R_CUBIC*T_k), False)
+            a_L, b_L = mix_pr(x, a_params, b_params)
+            A_L, B_L = a_L*P/((R_CUBIC*T_k)**2), b_L*P/(R_CUBIC*T_k)
+            Z_L = get_pr_z_roots(A_L, B_L, False)
             Z_V = Z_L
             break
         elif f_one >= 0:
             psi, regime = 1.0, "PURE SUPERHEATED VAPOR"
             y = z.copy()
             x = z / K / np.sum(z / K)
-            Z_V = get_pr_z_roots(mix_pr(y, a_p, b_p)[0]*P/((R_CUBIC*T_k)**2), mix_pr(y, a_p, b_p)[1]*P/(R_CUBIC*T_k), True)
+            a_V, b_V = mix_pr(y, a_params, b_params)
+            A_V, B_V = a_V*P/((R_CUBIC*T_k)**2), b_V*P/(R_CUBIC*T_k)
+            Z_V = get_pr_z_roots(A_V, B_V, True)
             Z_L = Z_V
             break
         else:
@@ -307,15 +309,15 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
             x = z / (1 + psi * (K - 1))
             y = K * x
             
-        a_L, b_L = mix_pr(x, a_p, b_p)
+        a_L, b_L = mix_pr(x, a_params, b_params)
         A_L, B_L = a_L*P/((R_CUBIC*T_k)**2), b_L*P/(R_CUBIC*T_k)
         Z_L = get_pr_z_roots(A_L, B_L, False)
-        phi_L = pr_fugacity(x, Z_L, A_L, B_L, a_p, b_p, a_L, b_L)
+        phi_L = pr_fugacity(x, Z_L, A_L, B_L, a_params, b_params, a_L, b_L)
         
-        a_V, b_V = mix_pr(y, a_p, b_p)
+        a_V, b_V = mix_pr(y, a_params, b_params)
         A_V, B_V = a_V*P/((R_CUBIC*T_k)**2), b_V*P/(R_CUBIC*T_k)
         Z_V = get_pr_z_roots(A_V, B_V, True)
-        phi_V = pr_fugacity(y, Z_V, A_V, B_V, a_p, b_p, a_V, b_V)
+        phi_V = pr_fugacity(y, Z_V, A_V, B_V, a_params, b_params, a_V, b_V)
         
         K_new = phi_L / phi_V
         if np.max(np.abs(K_new - K)) < 1e-8:
@@ -327,29 +329,26 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
     return psi, V, L, x, y, K, regime, Z_L, Z_V
 
 # ==============================================================================
-# 4. INTERACTIVE FRONTEND APPLICATION GATEWAY (STREAMLIT LIBRARIES)
-# ==============================================================================
-# ==============================================================================
 # 4. INTERACTIVE FRONTEND APPLICATION GATEWAY (PERBAIKAN POSISI STRUKTUR SIDEBAR)
 # ==============================================================================
-st.title("⚡ SIMULATOR FLASH INTEGRAL PARIPURNA — CORES GABUNGAN NRTL & PENG-ROBINSON")
+st.title("âš¡ SIMULATOR FLASH INTEGRAL PARIPURNA â€” CORES GABUNGAN NRTL & PENG-ROBINSON")
 st.markdown("---")
 
 model_type = st.sidebar.selectbox("PILIH MODEL TERMODINAMIKA (ENGINE)", ["NRTL (Sistem Cairan Non-Ideal/Polar)", "PENG-ROBINSON (Sistem Gas Nyata/Migas Tekanan Tinggi)"])
 
 st.sidebar.markdown("---")
-st.sidebar.header("📋 UTILITY & PARAMETER OPERASI")
+st.sidebar.header("ðŸ“‹ UTILITY & PARAMETER OPERASI")
 F = st.sidebar.number_input("Laju Massa Umpan (F) [kmol/h]", min_value=0.1, value=100.0)
 P = st.sidebar.number_input("Tekanan Alat Separator (P) [bar]", min_value=0.01, value=1.013 if "NRTL" in model_type else 12.0)
-T_flash = st.sidebar.number_input("Suhu Operasi Alat (T_flash) [°C]", value=78.2 if "NRTL" in model_type else 55.0)
+T_flash = st.sidebar.number_input("Suhu Operasi Alat (T_flash) [Â°C]", value=78.2 if "NRTL" in model_type else 55.0)
 
 T_feed = 25.0
 if "NRTL" in model_type:
-    T_feed = st.sidebar.number_input("Suhu Masuk Umpan (T_feed) [°C]", value=25.0)
+    T_feed = st.sidebar.number_input("Suhu Masuk Umpan (T_feed) [Â°C]", value=25.0)
 
 # KODE RE-POSITIONING: DEKLARASI DAFTAR KOMPONEN DULU AGAR TIDAK HILANG SAAT RE-RUN
 st.sidebar.markdown("---")
-st.sidebar.header("🧪 INPUT SPECIES COMPONENT")
+st.sidebar.header("ðŸ§ª INPUT SPECIES COMPONENT")
 if "NRTL" in model_type:
     available_comps = ['ETHANOL', 'WATER', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
     default_comps = ['ETHANOL', 'WATER']
@@ -391,7 +390,7 @@ else:
 # Blok Layout KPI Grid Utama Atas Dashboard
 grid1, grid2, grid3 = st.columns(3)
 with grid1:
-    st.metric(label="VAPOR FRACTION (ψ)", value=f"{psi:.6f}", delta=f"{psi*100:.2f} %")
+    st.metric(label="VAPOR FRACTION (Ïˆ)", value=f"{psi:.6f}", delta=f"{psi*100:.2f} %")
 with grid2:
     if "NRTL" in model_type:
         st.metric(label="NET THERMAL DUTY (Q)", value=f"{Q_total:.4f} kW")
@@ -406,7 +405,7 @@ st.markdown("---")
 left_pane, right_pane = st.columns(2)
 
 with left_pane:
-    st.subheader("📋 Matriks Komposisi Kesetimbangan Fase")
+    st.subheader("ðŸ“‹ Matriks Komposisi Kesetimbangan Fase")
     grid_rows = []
     for i, c in enumerate(selected_comps):
         grid_rows.append({
@@ -415,7 +414,7 @@ with left_pane:
             "K_i (Eq)": f"{K[i]:.4f}",
             "x_i (Liquid)": f"{x[i]:.6f}",
             "y_i (Vapor)": f"{y[i]:.6f}",
-            "Gamma (γ)" if "NRTL" in model_type else "Fugasitas": f"{gamma[i]:.4f}" if "NRTL" in model_type else "-"
+            "Gamma (Î³)" if "NRTL" in model_type else "Fugasitas": f"{gamma[i]:.4f}" if "NRTL" in model_type else "-"
         })
     grid_rows.append({
         "Komponen": "SIGMA TOTAL",
@@ -423,12 +422,12 @@ with left_pane:
         "K_i (Eq)": "-",
         "x_i (Liquid)": f"{np.sum(x):.6f}",
         "y_i (Vapor)": f"{np.sum(y):.6f}",
-        "Gamma (γ)" if "NRTL" in model_type else "Fugasitas": "-"
+        "Gamma (Î³)" if "NRTL" in model_type else "Fugasitas": "-"
     })
     st.table(grid_rows)
 
 with right_pane:
-    st.subheader("📈 Diagram Batang Pergeseran Massa Fasa")
+    st.subheader("ðŸ“ˆ Diagram Batang Pergeseran Massa Fasa")
     
     # 1. Konstruksi Matriks Dataframe Pengganti Matplotlib secara Aman
     chart_data = {
@@ -446,11 +445,10 @@ with right_pane:
         use_container_width=True
     )
 
-
 st.markdown("---")
 
 # Dokumentasi Laporan Audit Akhir Objektif Tanpa Narasi Kosong
-st.subheader("🔬 Laporan Penutupan Neraca Konservasi Industri")
+st.subheader("ðŸ”¬ Laporan Penutupan Neraca Konservasi Industri")
 audit_l, audit_r = st.columns(2)
 with audit_l:
     st.text_area(
@@ -458,7 +456,7 @@ with audit_l:
         value=(
             f"Aliran Produk Gas Atas (V)   : {V:.4f} kmol/h\n"
             f"Aliran Produk Cair Bawah (L) : {L:.4f} kmol/h\n"
-            f"Sum Evaluasi Akhir (Σx / Σy) : {np.sum(x):.6f} / {np.sum(y):.6f}\n"
+            f"Sum Evaluasi Akhir (Î£x / Î£y) : {np.sum(x):.6f} / {np.sum(y):.6f}\n"
             f"Verifikasi Status Sistem     : 100% AKURAT, NERACA MASSA TERTUTUP SEMPURNA"
         ), height=110
     )
@@ -480,4 +478,3 @@ with audit_r:
                 f"Verifikasi Status      : PERSAAMAAN KUBIK PENG-ROBINSON TERKONVERGENSI PENUH"
             ), height=110
         )
-
