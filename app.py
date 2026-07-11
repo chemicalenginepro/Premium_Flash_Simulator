@@ -435,19 +435,23 @@ with left_pane:
 
 with right_pane:
     st.subheader("📈 Diagram Batang Pergeseran Massa Fasa")
-    fig, ax = plt.subplots(figsize=(6, 4.2))
-    ind = np.arange(len(selected_comps))
-    w = 0.24
-    ax.bar(ind - w, z_norm, w, label='z_i (Umpan)', color='#bcbd22')
-    ax.bar(ind, x, w, label='x_i (Liquid)', color='#2ca02c')
-    ax.bar(ind + w, y, w, label='y_i (Vapor)', color='#ff7f0e')
-    ax.set_xticks(ind)
-    ax.set_xticklabels(selected_comps, rotation=10, fontsize=9)
-    ax.set_ylabel('Fraksi Mol')
-    ax.grid(True, alpha=0.15, axis='y')
-    ax.legend(fontsize=9)
-    st.pyplot(fig)
-    plt.close(fig)
+    
+    # 1. Konstruksi Matriks Dataframe Pengganti Matplotlib secara Aman
+    chart_data = {
+        "z_i (Umpan)": z_norm,
+        "x_i (Liquid)": x,
+        "y_i (Vapor)": y
+    }
+    
+    # 2. Cetak Grafik Native Streamlit (Aman dari Multi-User Crash / SegFault)
+    st.bar_chart(
+        data=chart_data, 
+        x=None, 
+        y=None, 
+        color=["#bcbd22", "#2ca02c", "#ff7f0e"], 
+        use_container_width=True
+    )
+
 
 st.markdown("---")
 
