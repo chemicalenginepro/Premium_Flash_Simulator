@@ -2,7 +2,7 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import bisect
-import requests  # Wajib ditambahkan untuk koneksi API ke Supabase
+import requests
 
 # Set konfigurasi layout dashboard industri
 st.set_page_config(layout="wide", page_title="PREMIUM PROCESS ENGINEERING SIMULATOR")
@@ -317,50 +317,98 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
     return psi, V, L, x, y, K, regime, Z_L, Z_V
 
 # ==============================================================================
-# 4. INTERACTIVE FRONTEND APPLICATION (DENGAN FIX UNTUK PERGANTIAN MODE)
+# 4. INTERACTIVE FRONTEND APPLICATION - FIX UNTUK PERGANTIAN MODE
 # ==============================================================================
 st.title("⚡ SIMULATOR FLASH INTEGRAL PARIPURNA — CORES GABUNGAN NRTL & PENG-ROBINSON")
 st.markdown("---")
 
-# === INISIALISASI SESSION STATE UNTUK MENCEGAH CRASH ===
+# === INISIALISASI SESSION STATE ===
 if 'model_type' not in st.session_state:
     st.session_state['model_type'] = "NRTL (Sistem Cairan Non-Ideal/Polar)"
+if 'last_model_type' not in st.session_state:
+    st.session_state['last_model_type'] = st.session_state['model_type']
+if 'reset_triggered' not in st.session_state:
+    st.session_state['reset_triggered'] = False
 
-# === SIDEBAR INPUT ===
+# === DETEKSI PERGANTIAN MODE ===
 model_type = st.sidebar.selectbox(
     "PILIH MODEL TERMODINAMIKA (ENGINE)", 
     ["NRTL (Sistem Cairan Non-Ideal/Polar)", "PENG-ROBINSON (Sistem Gas Nyata/Migas Tekanan Tinggi)"],
     index=0 if "NRTL" in st.session_state['model_type'] else 1
 )
 
-# UPDATE SESSION STATE
+# CEK APAKAH MODE BERUBAH
+if model_type != st.session_state['last_model_type']:
+    st.session_state['last_model_type'] = model_type
+    st.session_state['reset_triggered'] = True
+    # RESET KOMPONEN YANG DIPILIH
+    if "NRTL" in model_type:
+        # Reset ke default NRTL
+        st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
+        if 'selected_comps_pr' in st.session_state:
+            del st.session_state['selected_comps_pr']
+    else:
+        # Reset ke default PR
+        st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
+        if 'selected_comps_nrtl' in st.session_state:
+            del st.session_state['selected_comps_nrtl']
+    st.rerun()
+
 st.session_state['model_type'] = model_type
 
 st.sidebar.markdown("---")
 st.sidebar.header("📋 UTILITY & PARAMETER OPERASI")
-F = st.sidebar.number_input("Laju Massa Umpan (F) [kmol/h]", min_value=0.1, value=100.0)
-P = st.sidebar.number_input("Tekanan Alat Separator (P) [bar]", min_value=0.01, value=1.013 if "NRTL" in model_type else 12.0)
-T_flash = st.sidebar.number_input("Suhu Operasi Alat (T_flash) [°C]", value=78.2 if "NRTL" in model_type else 55.0)
+F = st.sidebar.number_input("Laju Massa Umpan (F) [kmol/h]", min_value=0.1, value=100.0, key="F_input")
+P = st.sidebar.number_input("Tekanan Alat Separator (P) [bar]", min_value=0.01, value=1.013 if "NRTL" in model_type else 12.0, key="P_input")
+T_flash = st.sidebar.number_input("Suhu Operasi Alat (T_flash) [°C]", value=78.2 if "NRTL" in model_type else 55.0, key="T_flash_input")
 
+# PARAMETER KHUSUS NRTL
 T_feed = 25.0
 if "NRTL" in model_type:
-    T_feed = st.sidebar.number_input("Suhu Masuk Umpan (T_feed) [°C]", value=25.0)
+    T_feed = st.sidebar.number_input("Suhu Masuk Umpan (T_feed) [°C]", value=25.0, key="T_feed_input")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🧪 INPUT SPECIES COMPONENT")
+
+# === PENENTUAN KOMPONEN BERDASARKAN MODE DENGAN RESET ===
 if "NRTL" in model_type:
     available_comps = ['ETHANOL', 'WATER', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
-    default_comps = ['ETHANOL', 'WATER']
+    # GUNAKAN SESSION STATE KHUSUS NRTL
+    if 'selected_comps_nrtl' not in st.session_state:
+        st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
+    default_comps = st.session_state['selected_comps_nrtl']
 else:
     available_comps = ['PROPANE', 'N-BUTANE', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
-    default_comps = ['PROPANE', 'N-BUTANE']
+    # GUNAKAN SESSION STATE KHUSUS PR
+    if 'selected_comps_pr' not in st.session_state:
+        st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
+    default_comps = st.session_state['selected_comps_pr']
 
-selected_comps = st.sidebar.multiselect("Pilih Komponen Aktif", available_comps, default=default_comps)
+# MULTISELECT DENGAN KEY UNIK PER MODE
+selected_comps = st.sidebar.multiselect(
+    "Pilih Komponen Aktif", 
+    available_comps, 
+    default=default_comps,
+    key=f"multiselect_{'nrtl' if 'NRTL' in model_type else 'pr'}"
+)
+
+# SIMPAN PILIHAN KE SESSION STATE
+if "NRTL" in model_type:
+    st.session_state['selected_comps_nrtl'] = selected_comps
+else:
+    st.session_state['selected_comps_pr'] = selected_comps
 
 st.sidebar.subheader("Fraksi Mol Komponen Masuk (z_i)")
 z_inputs = []
 for c in selected_comps:
-    val = st.sidebar.number_input(f"Fraksi z untuk {c}", min_value=0.0, max_value=1.0, value=1.0/max(len(selected_comps), 1), format="%.4f")
+    val = st.sidebar.number_input(
+        f"Fraksi z untuk {c}", 
+        min_value=0.0, 
+        max_value=1.0, 
+        value=1.0/max(len(selected_comps), 1), 
+        format="%.4f",
+        key=f"z_{c}_{'nrtl' if 'NRTL' in model_type else 'pr'}"
+    )
     z_inputs.append(val)
 
 # === VALIDASI ===
@@ -374,31 +422,31 @@ if np.sum(z_array) == 0:
     st.stop()
 z_norm = z_array / np.sum(z_array)
 
-# === EKSEKUSI ENGINE DENGAN TRY-EXCEPT UNTUK KEAMANAN ===
+# === EKSEKUSI ENGINE DENGAN TRY-EXCEPT ===
 try:
     if "NRTL" in model_type:
-        psi, V, L, x, y, K, regime, Q_total, gamma, P_sat = solve_nrtl_flash(F, P, T_flash, T_feed, selected_comps, z_norm)
+        # PASTIKAN T_feed TERSEDIA
+        if T_feed is None:
+            T_feed = 25.0
+        psi, V, L, x, y, K, regime, Q_total, gamma, P_sat = solve_nrtl_flash(
+            F, P, T_flash, T_feed, selected_comps, z_norm
+        )
         Z_L, Z_V = 0.0, 0.0
-        # PASTIKAN VARIABEL UNTUK PR TETAP TERDEFINISI
-        Q_total_nrtl = Q_total
-        gamma_nrtl = gamma
-        P_sat_nrtl = P_sat
     else:
-        psi, V, L, x, y, K, regime, Z_L, Z_V = solve_peng_robinson_flash(F, P, T_flash, selected_comps, z_norm)
-        # SET DEFAULT UNTUK VARIABEL NRTL AGAR TIDAK ERROR DI UI
+        psi, V, L, x, y, K, regime, Z_L, Z_V = solve_peng_robinson_flash(
+            F, P, T_flash, selected_comps, z_norm
+        )
         Q_total = 0.0
         gamma = np.ones(len(selected_comps))
         P_sat = np.zeros(len(selected_comps))
-        Q_total_nrtl = 0.0
-        gamma_nrtl = np.ones(len(selected_comps))
-        P_sat_nrtl = np.zeros(len(selected_comps))
         
 except Exception as e:
     st.error(f"ERROR PERHITUNGAN: {str(e)}")
+    st.error("Silakan periksa input parameter Anda.")
     st.stop()
 
 # ==============================================================================
-# 5. DISPLAY LAYER (DENGAN PENGECEKAN VARIABEL YANG AMAN)
+# 5. DISPLAY LAYER
 # ==============================================================================
 grid1, grid2, grid3 = st.columns(3)
 with grid1:
@@ -419,7 +467,6 @@ with left_pane:
     st.subheader("📋 Matriks Komposisi Kesetimbangan Fase")
     grid_rows = []
     for i, c in enumerate(selected_comps):
-        # AMAN: Gunakan variabel gamma yang sudah dipastikan terdefinisi
         gamma_val = gamma[i] if len(gamma) > i else 1.0
         grid_rows.append({
             "Komponen": c,
