@@ -447,6 +447,7 @@ with right_pane:
     ax.grid(True, alpha=0.15, axis='y')
     ax.legend(fontsize=9)
     st.pyplot(fig)
+    plt.close(fig)
 
 st.markdown("---")
 
