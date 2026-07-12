@@ -133,7 +133,7 @@ R_IDEAL = 8.314462
 R_CUBIC = 8.314462e-5
 
 # ==============================================================================
-# 2. MODULE A: NRTL ENGINE - ORIGINAL FUNCTIONS
+# 2. MODULE A: NRTL ENGINE
 # ==============================================================================
 def calculate_nrtl_gamma(x_vec, T_kelvin):
     x1 = max(x_vec[0], 1e-12)
@@ -159,9 +159,6 @@ def get_antoine_psat(comp, T_kelvin):
 def rr_objective(psi, z, K):
     return np.sum(z * (K - 1) / (1 + psi * (K - 1)))
 
-# ==============================================================================
-# 2a. MODULE A: NRTL ENGINE - ENHANCED ROBUST SOLVER
-# ==============================================================================
 def solve_nrtl_flash_robust(F, P, T_flash, T_feed, components, z, max_iter=200):
     """
     Robust NRTL flash solver with adaptive initial guessing
@@ -386,11 +383,6 @@ def solve_nrtl_flash_robust(F, P, T_flash, T_feed, components, z, max_iter=200):
     Q_total = (Q_sens + Q_lat) / 1000
     
     return psi, V, L, x_final, y_final, K, regime, Q_total, gamma_final, P_sat
-
-# ==============================================================================
-# 2b. REPLACE ORIGINAL solve_nrtl_flash WITH ROBUST VERSION
-# ==============================================================================
-solve_nrtl_flash = solve_nrtl_flash_robust
 
 # ==============================================================================
 # 3. MODULE B: PENG-ROBINSON ENGINE
@@ -695,143 +687,105 @@ class ValidationAgent:
         return report
 
 # ==============================================================================
-# 5. INTERACTIVE FRONTEND APPLICATION
 # ==============================================================================
+# 5. INTERACTIVE FRONTEND APPLICATION - REVISI DENGAN SAFE STATE HANDLING
+# ==============================================================================
+# ==============================================================================
+
 st.title("⚡ SIMULATOR FLASH INTEGRAL PARIPURNA — CORES GABUNGAN NRTL & PENG-ROBINSON")
 st.markdown("---")
 
 # ==============================================================================
-# 5a. HELPER FUNCTIONS UNTUK SAFE DEFAULT VALUES
+# 5a. STATE INITIALIZATION DENGAN SAFE DEFAULT
 # ==============================================================================
-def safe_get(key, default):
-    """Safe get from session state with fallback default"""
-    if key in st.session_state:
-        return st.session_state[key]
-    else:
+def safe_session_get(key, default):
+    """Safe get from session state with automatic default initialization"""
+    if key not in st.session_state:
         st.session_state[key] = default
-        return default
+    return st.session_state[key]
 
-def safe_del(key):
-    """Safe delete from session state"""
-    if key in st.session_state:
-        del st.session_state[key]
-
-def reset_nrtl_state():
-    """Reset all NRTL-related state"""
-    # Hapus semua key yang berhubungan dengan NRTL
-    for key in list(st.session_state.keys()):
-        if key.startswith('z_') and '_nrtl' in key:
-            safe_del(key)
-        elif key.startswith('multiselect_nrtl'):
-            safe_del(key)
-    safe_del('selected_comps_nrtl')
-    # Set default
-    st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
-    st.session_state['z_ETHANOL_nrtl'] = 0.5
-    st.session_state['z_WATER_nrtl'] = 0.5
-    st.session_state['F_input'] = 100.0
-    st.session_state['P_input'] = 1.013
-    st.session_state['T_flash_input'] = 78.2
-    st.session_state['T_feed_input'] = 25.0
-
-def reset_pr_state():
-    """Reset all PR-related state"""
-    # Hapus semua key yang berhubungan dengan PR
-    for key in list(st.session_state.keys()):
-        if key.startswith('z_') and '_pr' in key:
-            safe_del(key)
-        elif key.startswith('multiselect_pr'):
-            safe_del(key)
-    safe_del('selected_comps_pr')
-    # Set default
-    st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
-    st.session_state['z_PROPANE_pr'] = 0.5
-    st.session_state['z_N-BUTANE_pr'] = 0.5
-    st.session_state['F_input'] = 100.0
-    st.session_state['P_input'] = 12.0
-    st.session_state['T_flash_input'] = 55.0
+# Initialize ALL session state variables with safe defaults
+safe_session_get('model_type', "NRTL (Sistem Cairan Non-Ideal/Polar)")
+safe_session_get('last_model_type', "NRTL (Sistem Cairan Non-Ideal/Polar)")
+safe_session_get('F_input', 100.0)
+safe_session_get('P_input', 1.013)
+safe_session_get('T_flash_input', 78.2)
+safe_session_get('T_feed_input', 25.0)
+safe_session_get('selected_comps_nrtl', ['ETHANOL', 'WATER'])
+safe_session_get('selected_comps_pr', ['PROPANE', 'N-BUTANE'])
+safe_session_get('z_ETHANOL_nrtl', 0.5)
+safe_session_get('z_WATER_nrtl', 0.5)
+safe_session_get('z_PROPANE_pr', 0.5)
+safe_session_get('z_N-BUTANE_pr', 0.5)
 
 # ==============================================================================
-# 5b. INITIALIZE SESSION STATE DENGAN SAFE DEFAULT
-# ==============================================================================
-if 'model_type' not in st.session_state:
-    st.session_state['model_type'] = "NRTL (Sistem Cairan Non-Ideal/Polar)"
-
-if 'last_model_type' not in st.session_state:
-    st.session_state['last_model_type'] = st.session_state['model_type']
-
-# Initialize defaults based on current model
-if "NRTL" in st.session_state['model_type']:
-    if 'selected_comps_nrtl' not in st.session_state:
-        st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
-    if 'z_ETHANOL_nrtl' not in st.session_state:
-        st.session_state['z_ETHANOL_nrtl'] = 0.5
-    if 'z_WATER_nrtl' not in st.session_state:
-        st.session_state['z_WATER_nrtl'] = 0.5
-else:
-    if 'selected_comps_pr' not in st.session_state:
-        st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
-    if 'z_PROPANE_pr' not in st.session_state:
-        st.session_state['z_PROPANE_pr'] = 0.5
-    if 'z_N-BUTANE_pr' not in st.session_state:
-        st.session_state['z_N-BUTANE_pr'] = 0.5
-
-# ==============================================================================
-# 5c. MODEL SELECTION DENGAN HANDLING SWITCH
+# 5b. MODEL SELECTION - HANDLE SWITCH DENGAN RESET TOTAL
 # ==============================================================================
 model_type = st.sidebar.selectbox(
     "PILIH MODEL TERMODINAMIKA (ENGINE)", 
     ["NRTL (Sistem Cairan Non-Ideal/Polar)", "PENG-ROBINSON (Sistem Gas Nyata/Migas Tekanan Tinggi)"],
-    index=0 if "NRTL" in st.session_state.get('model_type', 'NRTL') else 1
+    index=0 if "NRTL" in st.session_state['model_type'] else 1
 )
 
-# ==============================================================================
-# 5d. HANDLE SWITCH MODE DENGAN RESET TOTAL
-# ==============================================================================
-if model_type != st.session_state.get('last_model_type', ''):
-    # Reset ALL state terlebih dahulu
+# === KRUSIAL: HANDLE SWITCH MODE DENGAN RESET TOTAL ===
+if model_type != st.session_state['last_model_type']:
+    # Reset ALL component-specific state
+    keys_to_delete = []
     for key in list(st.session_state.keys()):
         if key.startswith('z_'):
-            safe_del(key)
+            keys_to_delete.append(key)
         elif key.startswith('multiselect_'):
-            safe_del(key)
+            keys_to_delete.append(key)
         elif key in ['selected_comps_nrtl', 'selected_comps_pr']:
-            safe_del(key)
+            keys_to_delete.append(key)
     
-    # Set mode baru
+    for key in keys_to_delete:
+        if key in st.session_state:
+            del st.session_state[key]
+    
+    # Set new mode
     st.session_state['last_model_type'] = model_type
-    
-    if "NRTL" in model_type:
-        reset_nrtl_state()
-    else:
-        reset_pr_state()
-    
     st.session_state['model_type'] = model_type
     
-    # JANGAN PAKAI st.rerun() - biarkan Streamlit refresh naturally
-    
+    # Initialize defaults for new mode
+    if "NRTL" in model_type:
+        st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
+        st.session_state['z_ETHANOL_nrtl'] = 0.5
+        st.session_state['z_WATER_nrtl'] = 0.5
+        st.session_state['F_input'] = 100.0
+        st.session_state['P_input'] = 1.013
+        st.session_state['T_flash_input'] = 78.2
+        st.session_state['T_feed_input'] = 25.0
+    else:
+        st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
+        st.session_state['z_PROPANE_pr'] = 0.5
+        st.session_state['z_N-BUTANE_pr'] = 0.5
+        st.session_state['F_input'] = 100.0
+        st.session_state['P_input'] = 12.0
+        st.session_state['T_flash_input'] = 55.0
+
 # Update model_type di session state
 st.session_state['model_type'] = model_type
 
 # ==============================================================================
-# 5e. SIDEBAR INPUTS - SEMUA DENGAN SAFE GET
+# 5c. SIDEBAR INPUTS - REAL-TIME EXECUTION
 # ==============================================================================
 st.sidebar.markdown("---")
 st.sidebar.header("📋 UTILITY & PARAMETER OPERASI")
 
-# Get F value dengan safe get
+# F input - real-time
 F = st.sidebar.number_input(
     "Laju Massa Umpan (F) [kmol/h]", 
     min_value=0.1, 
-    value=safe_get('F_input', 100.0), 
+    value=st.session_state.get('F_input', 100.0), 
     key="F_input"
 )
 
-# Get P value dengan safe get berdasarkan mode
+# P input - real-time dengan mode-aware default
 if "NRTL" in model_type:
-    default_P = safe_get('P_input', 1.013)
+    default_P = st.session_state.get('P_input', 1.013)
 else:
-    default_P = safe_get('P_input', 12.0)
+    default_P = st.session_state.get('P_input', 12.0)
 P = st.sidebar.number_input(
     "Tekanan Alat Separator (P) [bar]", 
     min_value=0.01, 
@@ -839,21 +793,21 @@ P = st.sidebar.number_input(
     key="P_input"
 )
 
-# Get T_flash value dengan safe get berdasarkan mode
+# T_flash input - real-time dengan mode-aware default
 if "NRTL" in model_type:
-    default_T_flash = safe_get('T_flash_input', 78.2)
+    default_T_flash = st.session_state.get('T_flash_input', 78.2)
 else:
-    default_T_flash = safe_get('T_flash_input', 55.0)
+    default_T_flash = st.session_state.get('T_flash_input', 55.0)
 T_flash = st.sidebar.number_input(
     "Suhu Operasi Alat (T_flash) [°C]", 
     value=default_T_flash, 
     key="T_flash_input"
 )
 
-# T_feed only for NRTL
+# T_feed hanya untuk NRTL
 T_feed = 25.0
 if "NRTL" in model_type:
-    default_T_feed = safe_get('T_feed_input', 25.0)
+    default_T_feed = st.session_state.get('T_feed_input', 25.0)
     T_feed = st.sidebar.number_input(
         "Suhu Masuk Umpan (T_feed) [°C]", 
         value=default_T_feed, 
@@ -861,18 +815,22 @@ if "NRTL" in model_type:
     )
 
 # ==============================================================================
-# 5f. COMPONENT SELECTION - DENGAN SAFE GET
+# 5d. COMPONENT SELECTION - REAL-TIME
 # ==============================================================================
 st.sidebar.markdown("---")
 st.sidebar.header("🧪 INPUT SPECIES COMPONENT")
 
 if "NRTL" in model_type:
     available_comps = ['ETHANOL', 'WATER', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
-    default_comps = safe_get('selected_comps_nrtl', ['ETHANOL', 'WATER'])
+    if 'selected_comps_nrtl' not in st.session_state:
+        st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
+    default_comps = st.session_state['selected_comps_nrtl']
     mode_key = 'nrtl'
 else:
     available_comps = ['PROPANE', 'N-BUTANE', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
-    default_comps = safe_get('selected_comps_pr', ['PROPANE', 'N-BUTANE'])
+    if 'selected_comps_pr' not in st.session_state:
+        st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
+    default_comps = st.session_state['selected_comps_pr']
     mode_key = 'pr'
 
 selected_comps = st.sidebar.multiselect(
@@ -882,26 +840,26 @@ selected_comps = st.sidebar.multiselect(
     key=f"multiselect_{mode_key}"
 )
 
-# Store selected components back to session state
+# Store selected components back
 if "NRTL" in model_type:
     st.session_state['selected_comps_nrtl'] = selected_comps
 else:
     st.session_state['selected_comps_pr'] = selected_comps
 
 # ==============================================================================
-# 5g. COMPOSITION INPUTS - DENGAN SAFE GET
+# 5e. COMPOSITION INPUTS - REAL-TIME
 # ==============================================================================
 st.sidebar.subheader("Fraksi Mol Komponen Masuk (z_i)")
 
 z_inputs = []
-# First pass: ensure all z_* keys exist with defaults
+# Ensure all z_* keys exist
 for c in selected_comps:
     key = f"z_{c}_{mode_key}"
     if key not in st.session_state:
         default_val = 1.0 / max(len(selected_comps), 1)
         st.session_state[key] = default_val
 
-# Second pass: display inputs with values from session state
+# Display inputs
 for c in selected_comps:
     key = f"z_{c}_{mode_key}"
     val = st.sidebar.number_input(
@@ -915,7 +873,7 @@ for c in selected_comps:
     z_inputs.append(val)
 
 # ==============================================================================
-# 5h. VALIDATION AND EXECUTION
+# 5f. VALIDATION - CEK INPUT SEBELUM EKSEKUSI
 # ==============================================================================
 if len(selected_comps) < 2:
     st.error("SYSTEM CRITICAL ERROR: Perhitungan flash multi-komponen mewajibkan minimal 2 spesimen zat aktif.")
@@ -927,11 +885,14 @@ if np.sum(z_array) == 0:
     st.stop()
 z_norm = z_array / np.sum(z_array)
 
+# ==============================================================================
+# 5g. REAL-TIME EXECUTION - EKSEKUSI SETIAP KALI USER BERUBAH INPUT
+# ==============================================================================
 try:
     if "NRTL" in model_type:
         if T_feed is None:
             T_feed = 25.0
-        psi, V, L, x, y, K, regime, Q_total, gamma, P_sat = solve_nrtl_flash(
+        psi, V, L, x, y, K, regime, Q_total, gamma, P_sat = solve_nrtl_flash_robust(
             F, P, T_flash, T_feed, selected_comps, z_norm
         )
         Z_L = 0.0
@@ -952,7 +913,7 @@ except Exception as e:
     st.stop()
 
 # ==============================================================================
-# 6. AI VALIDATION AGENT EXECUTION
+# 6. AI VALIDATION AGENT - REAL-TIME VALIDATION
 # ==============================================================================
 agent = ValidationAgent()
 validation_report = agent.validate_flash_results(
@@ -973,7 +934,7 @@ validation_report = agent.validate_flash_results(
 )
 
 # ==============================================================================
-# 7. DISPLAY LAYER WITH VALIDATION
+# 7. DISPLAY LAYER - REAL-TIME REPORT GENERATION
 # ==============================================================================
 grid1, grid2, grid3, grid4 = st.columns(4)
 with grid1:
