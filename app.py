@@ -648,7 +648,7 @@ with right_pane:
             # === FIX: GUNAKAN width BUKAN use_container_width ===
             st.bar_chart(
                 data=chart_data, 
-                width='stretch',  # PERBAIKAN UTAMA
+                use_container_width=True,    # PERBAIKAN UTAMA
                 color=["#bcbd22", "#2ca02c", "#ff7f0e"]
             )
         except Exception as chart_error:
