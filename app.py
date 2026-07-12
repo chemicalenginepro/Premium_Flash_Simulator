@@ -6,9 +6,97 @@ import requests
 import json
 import re
 from datetime import datetime
+import traceback
+import logging
+from typing import Dict, List, Tuple, Optional, Any
 
-# Set konfigurasi layout dashboard industri
-st.set_page_config(layout="wide", page_title="PREMIUM PROCESS ENGINEERING SIMULATOR")
+# ==============================================================================
+# ERROR TRACKING SYSTEM
+# ==============================================================================
+class ErrorTracker:
+    """Sistem tracking kesalahan untuk menangkap dan menganalisis error saat switch mode"""
+    
+    def __init__(self):
+        self.error_log = []
+        self.error_count = 0
+        self.last_error = None
+        self.stack_traces = []
+        
+    def log_error(self, error_type: str, error_message: str, stack_trace: str = None, context: Dict = None):
+        """Mencatat error dengan detail lengkap"""
+        error_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "type": error_type,
+            "message": error_message,
+            "stack_trace": stack_trace,
+            "context": context or {},
+            "session_state_snapshot": self._capture_session_state()
+        }
+        self.error_log.append(error_entry)
+        self.error_count += 1
+        self.last_error = error_entry
+        
+        # Log ke console untuk debugging
+        logging.error(f"[ERROR TRACKER] {error_type}: {error_message}")
+        if stack_trace:
+            logging.error(f"Stack trace: {stack_trace}")
+            
+        return error_entry
+    
+    def _capture_session_state(self) -> Dict:
+        """Mengambil snapshot session state untuk debugging"""
+        snapshot = {}
+        try:
+            for key in st.session_state.keys():
+                # Hindari mengambil data yang terlalu besar
+                if key not in ['_widgets', '_form_submitted']:
+                    try:
+                        value = st.session_state[key]
+                        if isinstance(value, (str, int, float, bool, list, dict)) and len(str(value)) < 1000:
+                            snapshot[key] = value
+                        else:
+                            snapshot[key] = f"<{type(value).__name__} (truncated)>"
+                    except:
+                        snapshot[key] = "<unable to read>"
+        except:
+            snapshot["error"] = "Unable to capture session state"
+        return snapshot
+    
+    def get_error_summary(self) -> Dict:
+        """Mendapatkan ringkasan error"""
+        return {
+            "total_errors": self.error_count,
+            "last_error": self.last_error,
+            "error_types": list(set([e['type'] for e in self.error_log])),
+            "recent_errors": self.error_log[-5:] if self.error_log else []
+        }
+    
+    def clear_errors(self):
+        """Membersihkan log error"""
+        self.error_log = []
+        self.error_count = 0
+        self.last_error = None
+        
+    def display_error_report(self):
+        """Menampilkan laporan error di UI"""
+        if self.error_count > 0:
+            st.error(f"⚠️ {self.error_count} Error(s) Terdeteksi")
+            
+            with st.expander("📋 Detail Error Log", expanded=False):
+                for i, error in enumerate(self.error_log[-10:]):  # Tampilkan 10 error terakhir
+                    st.markdown(f"**Error #{i+1}** ({error['timestamp']})")
+                    st.markdown(f"- **Type:** `{error['type']}`")
+                    st.markdown(f"- **Message:** {error['message']}")
+                    if error.get('stack_trace'):
+                        with st.expander("🔍 Stack Trace"):
+                            st.code(error['stack_trace'], language="python")
+                    if error.get('context'):
+                        st.json(error['context'])
+                    st.markdown("---")
+
+# Inisialisasi error tracker
+if 'error_tracker' not in st.session_state:
+    st.session_state['error_tracker'] = ErrorTracker()
 
 # ==============================================================================
 # SECURE CONFIGURATION: KONEKSI DATABASE SUPABASE
@@ -508,74 +596,254 @@ st.markdown("---")
 # ==============================================================================
 # 5a. FIXED: STATE INITIALIZATION WITH COMPLETE RESET MECHANISM
 # ==============================================================================
+
+# === STATE MANAGEMENT WITH ERROR TRACKING ===
+def safe_session_state_get(key, default=None):
+    """Safe wrapper untuk mendapatkan nilai dari session state dengan error tracking"""
+    try:
+        return st.session_state.get(key, default)
+    except Exception as e:
+        error_tracker = st.session_state.get('error_tracker')
+        if error_tracker:
+            error_tracker.log_error(
+                "SESSION_STATE_GET_ERROR",
+                f"Error accessing key '{key}': {str(e)}",
+                traceback.format_exc(),
+                {"key": key, "default": default}
+            )
+        return default
+
+def safe_session_state_set(key, value):
+    """Safe wrapper untuk mengatur nilai di session state dengan error tracking"""
+    try:
+        st.session_state[key] = value
+        return True
+    except Exception as e:
+        error_tracker = st.session_state.get('error_tracker')
+        if error_tracker:
+            error_tracker.log_error(
+                "SESSION_STATE_SET_ERROR",
+                f"Error setting key '{key}': {str(e)}",
+                traceback.format_exc(),
+                {"key": key, "value_type": type(value).__name__}
+            )
+        return False
+
 def reset_session_state_for_mode(target_mode):
     """
     Reset all session state keys to ensure clean state when switching modes.
     This prevents any cross-mode contamination of values.
     """
-    # Identify mode prefix
-    mode_prefix = 'nrtl' if 'NRTL' in target_mode else 'pr'
-    
-    # Delete ALL component-specific keys (z_*, multiselect_*, etc.)
-    keys_to_delete = []
-    for key in st.session_state.keys():
-        # Delete all z_* keys (composition inputs)
-        if key.startswith('z_'):
-            keys_to_delete.append(key)
-        # Delete all multiselect_* keys
-        elif key.startswith('multiselect_'):
-            keys_to_delete.append(key)
-        # Delete old component selection keys
-        elif key in ['selected_comps_nrtl', 'selected_comps_pr']:
-            keys_to_delete.append(key)
-        # Delete parameter input keys
-        elif key in ['F_input', 'P_input', 'T_flash_input', 'T_feed_input']:
-            keys_to_delete.append(key)
-        # Delete old model tracking keys
-        elif key in ['model_type', 'last_model_type', 'reset_triggered']:
-            # Keep these, they're needed for mode tracking
-            pass
-        else:
-            # Also delete any key that might contain old composition data
-            if isinstance(st.session_state[key], (list, np.ndarray)) and len(str(key)) > 0:
-                # Check if it looks like composition data
+    try:
+        error_tracker = st.session_state.get('error_tracker')
+        
+        # Log the reset operation
+        if error_tracker:
+            error_tracker.log_error(
+                "MODE_SWITCH",
+                f"Switching to mode: {target_mode}",
+                None,
+                {"target_mode": target_mode}
+            )
+        
+        # Identify mode prefix
+        mode_prefix = 'nrtl' if 'NRTL' in target_mode else 'pr'
+        
+        # Define keys to preserve
+        preserve_keys = [
+            'authenticated', 'username', 'error_tracker', 
+            'model_type', 'last_model_type', 'reset_triggered',
+            'mode_switch_count'
+        ]
+        
+        # Delete ALL component-specific keys
+        keys_to_delete = []
+        for key in list(st.session_state.keys()):
+            if key in preserve_keys:
+                continue
+                
+            # Delete all z_* keys (composition inputs)
+            if key.startswith('z_'):
+                keys_to_delete.append(key)
+            # Delete all multiselect_* keys
+            elif key.startswith('multiselect_'):
+                keys_to_delete.append(key)
+            # Delete old component selection keys
+            elif key in ['selected_comps_nrtl', 'selected_comps_pr']:
+                keys_to_delete.append(key)
+            # Delete parameter input keys
+            elif key in ['F_input', 'P_input', 'T_flash_input', 'T_feed_input']:
+                keys_to_delete.append(key)
+            # Delete any key that might contain old composition data
+            elif isinstance(st.session_state[key], (list, np.ndarray)):
                 if 'comp' in key.lower() or 'z_' in key or 'x_' in key or 'y_' in key:
                     keys_to_delete.append(key)
-    
-    # Remove duplicates
-    keys_to_delete = list(set(keys_to_delete))
-    
-    # Delete the keys
-    for key in keys_to_delete:
-        if key in st.session_state:
-            del st.session_state[key]
-    
-    return mode_prefix
+        
+        # Remove duplicates and delete
+        keys_to_delete = list(set(keys_to_delete))
+        
+        for key in keys_to_delete:
+            try:
+                if key in st.session_state:
+                    del st.session_state[key]
+            except Exception as e:
+                if error_tracker:
+                    error_tracker.log_error(
+                        "SESSION_STATE_DELETE_ERROR",
+                        f"Error deleting key '{key}': {str(e)}",
+                        traceback.format_exc(),
+                        {"key": key}
+                    )
+        
+        # Increment mode switch counter for tracking
+        if 'mode_switch_count' not in st.session_state:
+            st.session_state['mode_switch_count'] = 0
+        st.session_state['mode_switch_count'] += 1
+        
+        return mode_prefix
+        
+    except Exception as e:
+        error_tracker = st.session_state.get('error_tracker')
+        if error_tracker:
+            error_tracker.log_error(
+                "RESET_SESSION_ERROR",
+                f"Critical error during session reset: {str(e)}",
+                traceback.format_exc(),
+                {"target_mode": target_mode}
+            )
+        raise
 
 def initialize_nrtl_defaults():
-    """Set default values for NRTL mode"""
-    st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
-    st.session_state['F_input'] = 100.0
-    st.session_state['P_input'] = 1.013
-    st.session_state['T_flash_input'] = 78.2
-    st.session_state['T_feed_input'] = 25.0
-    # Set default z values for ETHANOL and WATER
-    if 'z_ETHANOL_nrtl' not in st.session_state:
-        st.session_state['z_ETHANOL_nrtl'] = 0.5
-    if 'z_WATER_nrtl' not in st.session_state:
-        st.session_state['z_WATER_nrtl'] = 0.5
+    """Set default values for NRTL mode with error handling"""
+    try:
+        error_tracker = st.session_state.get('error_tracker')
+        
+        # Only initialize if not already set
+        if 'selected_comps_nrtl' not in st.session_state:
+            st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
+        
+        if 'F_input' not in st.session_state:
+            st.session_state['F_input'] = 100.0
+        
+        if 'P_input' not in st.session_state:
+            st.session_state['P_input'] = 1.013
+        
+        if 'T_flash_input' not in st.session_state:
+            st.session_state['T_flash_input'] = 78.2
+        
+        if 'T_feed_input' not in st.session_state:
+            st.session_state['T_feed_input'] = 25.0
+        
+        # Set default z values for ETHANOL and WATER with safe check
+        if 'z_ETHANOL_nrtl' not in st.session_state:
+            st.session_state['z_ETHANOL_nrtl'] = 0.5
+        if 'z_WATER_nrtl' not in st.session_state:
+            st.session_state['z_WATER_nrtl'] = 0.5
+            
+        # Remove PR-specific keys that might exist
+        if 'selected_comps_pr' in st.session_state:
+            del st.session_state['selected_comps_pr']
+            
+    except Exception as e:
+        error_tracker = st.session_state.get('error_tracker')
+        if error_tracker:
+            error_tracker.log_error(
+                "INIT_NRTL_ERROR",
+                f"Error initializing NRTL defaults: {str(e)}",
+                traceback.format_exc()
+            )
+        raise
 
 def initialize_pr_defaults():
-    """Set default values for Peng-Robinson mode"""
-    st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
-    st.session_state['F_input'] = 100.0
-    st.session_state['P_input'] = 12.0
-    st.session_state['T_flash_input'] = 55.0
-    # Set default z values for PROPANE and N-BUTANE
-    if 'z_PROPANE_pr' not in st.session_state:
-        st.session_state['z_PROPANE_pr'] = 0.5
-    if 'z_N-BUTANE_pr' not in st.session_state:
-        st.session_state['z_N-BUTANE_pr'] = 0.5
+    """Set default values for Peng-Robinson mode with error handling"""
+    try:
+        error_tracker = st.session_state.get('error_tracker')
+        
+        # Only initialize if not already set
+        if 'selected_comps_pr' not in st.session_state:
+            st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
+        
+        if 'F_input' not in st.session_state:
+            st.session_state['F_input'] = 100.0
+        
+        if 'P_input' not in st.session_state:
+            st.session_state['P_input'] = 12.0
+        
+        if 'T_flash_input' not in st.session_state:
+            st.session_state['T_flash_input'] = 55.0
+        
+        # Set default z values for PROPANE and N-BUTANE with safe check
+        if 'z_PROPANE_pr' not in st.session_state:
+            st.session_state['z_PROPANE_pr'] = 0.5
+        if 'z_N-BUTANE_pr' not in st.session_state:
+            st.session_state['z_N-BUTANE_pr'] = 0.5
+            
+        # Remove NRTL-specific keys that might exist
+        if 'selected_comps_nrtl' in st.session_state:
+            del st.session_state['selected_comps_nrtl']
+        if 'T_feed_input' in st.session_state:
+            del st.session_state['T_feed_input']
+            
+    except Exception as e:
+        error_tracker = st.session_state.get('error_tracker')
+        if error_tracker:
+            error_tracker.log_error(
+                "INIT_PR_ERROR",
+                f"Error initializing PR defaults: {str(e)}",
+                traceback.format_exc()
+            )
+        raise
+
+def check_and_fix_state_consistency():
+    """Memastikan konsistensi state dan memperbaiki ketidaksesuaian"""
+    try:
+        error_tracker = st.session_state.get('error_tracker')
+        issues_found = []
+        
+        # Check model type consistency
+        model_type = st.session_state.get('model_type', "NRTL (Sistem Cairan Non-Ideal/Polar)")
+        
+        if "NRTL" in model_type:
+            # Check NRTL-specific keys exist
+            if 'selected_comps_nrtl' not in st.session_state:
+                st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
+                issues_found.append("Added missing selected_comps_nrtl")
+            
+            # Remove PR-specific keys if they exist (inconsistent)
+            if 'selected_comps_pr' in st.session_state:
+                del st.session_state['selected_comps_pr']
+                issues_found.append("Removed inconsistent selected_comps_pr")
+                
+        else:
+            # Peng-Robinson mode
+            if 'selected_comps_pr' not in st.session_state:
+                st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
+                issues_found.append("Added missing selected_comps_pr")
+            
+            if 'selected_comps_nrtl' in st.session_state:
+                del st.session_state['selected_comps_nrtl']
+                issues_found.append("Removed inconsistent selected_comps_nrtl")
+        
+        # Log any fixes applied
+        if issues_found and error_tracker:
+            error_tracker.log_error(
+                "STATE_CONSISTENCY_FIX",
+                f"Fixed state inconsistencies: {', '.join(issues_found)}",
+                None,
+                {"issues": issues_found}
+            )
+            
+        return True
+        
+    except Exception as e:
+        error_tracker = st.session_state.get('error_tracker')
+        if error_tracker:
+            error_tracker.log_error(
+                "STATE_CONSISTENCY_CHECK_ERROR",
+                f"Error checking state consistency: {str(e)}",
+                traceback.format_exc()
+            )
+        return False
 
 # Initialize model type if not present
 if 'model_type' not in st.session_state:
@@ -587,41 +855,95 @@ if 'last_model_type' not in st.session_state:
 if 'reset_triggered' not in st.session_state:
     st.session_state['reset_triggered'] = False
 
+# Run state consistency check
+check_and_fix_state_consistency()
+
 # ==============================================================================
-# 5b. FIXED: SWITCH MODE WITH COMPLETE RESET
+# 5b. FIXED: SWITCH MODE WITH COMPLETE RESET AND ERROR TRACKING
 # ==============================================================================
-model_type = st.sidebar.selectbox(
-    "PILIH MODEL TERMODINAMIKA (ENGINE)", 
-    ["NRTL (Sistem Cairan Non-Ideal/Polar)", "PENG-ROBINSON (Sistem Gas Nyata/Migas Tekanan Tinggi)"],
-    index=0 if "NRTL" in st.session_state['model_type'] else 1
-)
+
+try:
+    # Mode selection with error handling wrapper
+    model_type = st.sidebar.selectbox(
+        "PILIH MODEL TERMODINAMIKA (ENGINE)", 
+        ["NRTL (Sistem Cairan Non-Ideal/Polar)", "PENG-ROBINSON (Sistem Gas Nyata/Migas Tekanan Tinggi)"],
+        index=0 if "NRTL" in st.session_state['model_type'] else 1,
+        key="model_selector"
+    )
+except Exception as e:
+    error_tracker = st.session_state.get('error_tracker')
+    if error_tracker:
+        error_tracker.log_error(
+            "MODEL_SELECTOR_ERROR",
+            f"Error creating model selector: {str(e)}",
+            traceback.format_exc()
+        )
+    # Fallback: use current model type
+    model_type = st.session_state.get('model_type', "NRTL (Sistem Cairan Non-Ideal/Polar)")
 
 # Check if mode changed
-if model_type != st.session_state['last_model_type']:
-    # Store the new mode
-    st.session_state['last_model_type'] = model_type
-    st.session_state['reset_triggered'] = True
-    
-    # Reset ALL session states based on target mode
-    mode_prefix = reset_session_state_for_mode(model_type)
-    
-    # Initialize defaults for the new mode
-    if "NRTL" in model_type:
-        initialize_nrtl_defaults()
-        # Remove PR selection if exists
-        if 'selected_comps_pr' in st.session_state:
-            del st.session_state['selected_comps_pr']
-    else:
-        initialize_pr_defaults()
-        # Remove NRTL selection if exists
-        if 'selected_comps_nrtl' in st.session_state:
-            del st.session_state['selected_comps_nrtl']
-    
-    # Update the model type in session state
-    st.session_state['model_type'] = model_type
-    
-    # Force rerun to apply changes
-    st.rerun()
+if model_type != st.session_state.get('last_model_type', ''):
+    try:
+        # Log the mode change attempt
+        error_tracker = st.session_state.get('error_tracker')
+        if error_tracker:
+            error_tracker.log_error(
+                "MODE_CHANGE_ATTEMPT",
+                f"Attempting to switch from '{st.session_state.get('last_model_type')}' to '{model_type}'",
+                None,
+                {"from_mode": st.session_state.get('last_model_type'), "to_mode": model_type}
+            )
+        
+        # Store the new mode first
+        st.session_state['last_model_type'] = model_type
+        st.session_state['reset_triggered'] = True
+        
+        # Reset ALL session states based on target mode
+        reset_session_state_for_mode(model_type)
+        
+        # Initialize defaults for the new mode
+        if "NRTL" in model_type:
+            initialize_nrtl_defaults()
+        else:
+            initialize_pr_defaults()
+        
+        # Update the model type in session state
+        st.session_state['model_type'] = model_type
+        
+        # Log successful switch
+        if error_tracker:
+            error_tracker.log_error(
+                "MODE_CHANGE_SUCCESS",
+                f"Successfully switched to '{model_type}'",
+                None,
+                {"mode": model_type}
+            )
+        
+        # Force rerun to apply changes
+        st.rerun()
+        
+    except Exception as e:
+        error_tracker = st.session_state.get('error_tracker')
+        if error_tracker:
+            error_tracker.log_error(
+                "MODE_CHANGE_ERROR",
+                f"Critical error during mode switch: {str(e)}",
+                traceback.format_exc(),
+                {"from_mode": st.session_state.get('last_model_type'), "to_mode": model_type}
+            )
+        # Display error to user
+        st.error(f"❌ Gagal beralih mode: {str(e)}")
+        st.error("Mohon refresh halaman atau hubungi administrator.")
+        
+        # Try to recover by resetting to a known good state
+        try:
+            if "NRTL" in model_type:
+                initialize_nrtl_defaults()
+            else:
+                initialize_pr_defaults()
+            st.session_state['model_type'] = model_type
+        except:
+            pass
 
 # If reset was triggered but mode didn't change (shouldn't happen, but safe)
 if st.session_state.get('reset_triggered', False) and model_type == st.session_state.get('last_model_type', ''):
@@ -637,7 +959,7 @@ st.sidebar.markdown("---")
 st.sidebar.header("📋 UTILITY & PARAMETER OPERASI")
 
 # Get F value with safe default
-default_F = st.session_state.get('F_input', 100.0)
+default_F = safe_session_state_get('F_input', 100.0)
 F = st.sidebar.number_input(
     "Laju Massa Umpan (F) [kmol/h]", 
     min_value=0.1, 
@@ -647,9 +969,9 @@ F = st.sidebar.number_input(
 
 # Get P value with safe default based on mode
 if "NRTL" in model_type:
-    default_P = st.session_state.get('P_input', 1.013)
+    default_P = safe_session_state_get('P_input', 1.013)
 else:
-    default_P = st.session_state.get('P_input', 12.0)
+    default_P = safe_session_state_get('P_input', 12.0)
 P = st.sidebar.number_input(
     "Tekanan Alat Separator (P) [bar]", 
     min_value=0.01, 
@@ -659,9 +981,9 @@ P = st.sidebar.number_input(
 
 # Get T_flash value with safe default based on mode
 if "NRTL" in model_type:
-    default_T_flash = st.session_state.get('T_flash_input', 78.2)
+    default_T_flash = safe_session_state_get('T_flash_input', 78.2)
 else:
-    default_T_flash = st.session_state.get('T_flash_input', 55.0)
+    default_T_flash = safe_session_state_get('T_flash_input', 55.0)
 T_flash = st.sidebar.number_input(
     "Suhu Operasi Alat (T_flash) [°C]", 
     value=default_T_flash, 
@@ -671,7 +993,7 @@ T_flash = st.sidebar.number_input(
 # T_feed only for NRTL
 T_feed = 25.0
 if "NRTL" in model_type:
-    default_T_feed = st.session_state.get('T_feed_input', 25.0)
+    default_T_feed = safe_session_state_get('T_feed_input', 25.0)
     T_feed = st.sidebar.number_input(
         "Suhu Masuk Umpan (T_feed) [°C]", 
         value=default_T_feed, 
@@ -684,33 +1006,52 @@ if "NRTL" in model_type:
 st.sidebar.markdown("---")
 st.sidebar.header("🧪 INPUT SPECIES COMPONENT")
 
-if "NRTL" in model_type:
-    available_comps = ['ETHANOL', 'WATER', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
-    # Ensure selected_comps_nrtl exists
-    if 'selected_comps_nrtl' not in st.session_state:
-        st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
-    default_comps = st.session_state['selected_comps_nrtl']
-    mode_key = 'nrtl'
-else:
-    available_comps = ['PROPANE', 'N-BUTANE', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
-    # Ensure selected_comps_pr exists
-    if 'selected_comps_pr' not in st.session_state:
-        st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
-    default_comps = st.session_state['selected_comps_pr']
-    mode_key = 'pr'
+try:
+    if "NRTL" in model_type:
+        available_comps = ['ETHANOL', 'WATER', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
+        # Ensure selected_comps_nrtl exists
+        if 'selected_comps_nrtl' not in st.session_state:
+            st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
+        default_comps = st.session_state['selected_comps_nrtl']
+        mode_key = 'nrtl'
+    else:
+        available_comps = ['PROPANE', 'N-BUTANE', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
+        # Ensure selected_comps_pr exists
+        if 'selected_comps_pr' not in st.session_state:
+            st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
+        default_comps = st.session_state['selected_comps_pr']
+        mode_key = 'pr'
 
-selected_comps = st.sidebar.multiselect(
-    "Pilih Komponen Aktif", 
-    available_comps, 
-    default=default_comps,
-    key=f"multiselect_{mode_key}"
-)
+    selected_comps = st.sidebar.multiselect(
+        "Pilih Komponen Aktif", 
+        available_comps, 
+        default=default_comps,
+        key=f"multiselect_{mode_key}"
+    )
 
-# Store selected components back to session state
-if "NRTL" in model_type:
-    st.session_state['selected_comps_nrtl'] = selected_comps
-else:
-    st.session_state['selected_comps_pr'] = selected_comps
+    # Store selected components back to session state
+    if "NRTL" in model_type:
+        st.session_state['selected_comps_nrtl'] = selected_comps
+    else:
+        st.session_state['selected_comps_pr'] = selected_comps
+
+except Exception as e:
+    error_tracker = st.session_state.get('error_tracker')
+    if error_tracker:
+        error_tracker.log_error(
+            "COMPONENT_SELECTION_ERROR",
+            f"Error in component selection: {str(e)}",
+            traceback.format_exc(),
+            {"model_type": model_type}
+        )
+    # Fallback: use default components
+    if "NRTL" in model_type:
+        selected_comps = ['ETHANOL', 'WATER']
+        st.session_state['selected_comps_nrtl'] = selected_comps
+    else:
+        selected_comps = ['PROPANE', 'N-BUTANE']
+        st.session_state['selected_comps_pr'] = selected_comps
+    st.warning("⚠️ Menggunakan komponen default karena terjadi error pada seleksi komponen.")
 
 # ==============================================================================
 # 5e. COMPOSITION INPUTS (Now with safe default handling)
@@ -718,26 +1059,43 @@ else:
 st.sidebar.subheader("Fraksi Mol Komponen Masuk (z_i)")
 
 z_inputs = []
-# First pass: ensure all z_* keys exist with defaults
-for c in selected_comps:
-    key = f"z_{c}_{mode_key}"
-    if key not in st.session_state:
-        # Set default value
-        default_val = 1.0 / max(len(selected_comps), 1)
-        st.session_state[key] = default_val
+try:
+    # First pass: ensure all z_* keys exist with defaults
+    for c in selected_comps:
+        key = f"z_{c}_{mode_key}"
+        if key not in st.session_state:
+            # Set default value
+            default_val = 1.0 / max(len(selected_comps), 1)
+            st.session_state[key] = default_val
 
-# Second pass: display inputs with values from session state
-for c in selected_comps:
-    key = f"z_{c}_{mode_key}"
-    val = st.sidebar.number_input(
-        f"Fraksi z untuk {c}", 
-        min_value=0.0, 
-        max_value=1.0, 
-        value=st.session_state[key],
-        format="%.4f",
-        key=key
-    )
-    z_inputs.append(val)
+    # Second pass: display inputs with values from session state
+    for c in selected_comps:
+        key = f"z_{c}_{mode_key}"
+        val = st.sidebar.number_input(
+            f"Fraksi z untuk {c}", 
+            min_value=0.0, 
+            max_value=1.0, 
+            value=st.session_state[key],
+            format="%.4f",
+            key=key
+        )
+        z_inputs.append(val)
+
+except Exception as e:
+    error_tracker = st.session_state.get('error_tracker')
+    if error_tracker:
+        error_tracker.log_error(
+            "COMPOSITION_INPUT_ERROR",
+            f"Error in composition input: {str(e)}",
+            traceback.format_exc(),
+            {"components": selected_comps}
+        )
+    # Fallback: use equal fractions
+    if len(selected_comps) > 0:
+        z_inputs = [1.0 / len(selected_comps)] * len(selected_comps)
+    else:
+        z_inputs = []
+    st.warning("⚠️ Menggunakan fraksi sama rata karena terjadi error pada input komposisi.")
 
 # ==============================================================================
 # 5f. VALIDATION AND EXECUTION
@@ -771,30 +1129,62 @@ try:
         model_name = "PENG-ROBINSON"
         
 except Exception as e:
-    st.error(f"ERROR PERHITUNGAN: {str(e)}")
-    st.error("Silakan periksa input parameter Anda.")
+    error_tracker = st.session_state.get('error_tracker')
+    if error_tracker:
+        error_tracker.log_error(
+            "FLASH_CALCULATION_ERROR",
+            f"Error in flash calculation: {str(e)}",
+            traceback.format_exc(),
+            {
+                "model_type": model_type,
+                "components": selected_comps,
+                "F": F, "P": P, "T_flash": T_flash,
+                "z": z_norm.tolist()
+            }
+        )
+    st.error(f"❌ ERROR PERHITUNGAN: {str(e)}")
+    st.error("Silakan periksa input parameter Anda atau coba mode lain.")
     st.stop()
 
 # ==============================================================================
 # 6. AI VALIDATION AGENT EXECUTION
 # ==============================================================================
-agent = ValidationAgent()
-validation_report = agent.validate_flash_results(
-    psi=psi,
-    V=V,
-    L=L,
-    x=x,
-    y=y,
-    K=K,
-    z=z_norm,
-    components=selected_comps,
-    model_type=model_name,
-    regime=regime,
-    gamma=gamma if "NRTL" in model_type else None,
-    Q_total=Q_total if "NRTL" in model_type else None,
-    Z_L=Z_L if "PENG-ROBINSON" in model_type else None,
-    Z_V=Z_V if "PENG-ROBINSON" in model_type else None
-)
+try:
+    agent = ValidationAgent()
+    validation_report = agent.validate_flash_results(
+        psi=psi,
+        V=V,
+        L=L,
+        x=x,
+        y=y,
+        K=K,
+        z=z_norm,
+        components=selected_comps,
+        model_type=model_name,
+        regime=regime,
+        gamma=gamma if "NRTL" in model_type else None,
+        Q_total=Q_total if "NRTL" in model_type else None,
+        Z_L=Z_L if "PENG-ROBINSON" in model_type else None,
+        Z_V=Z_V if "PENG-ROBINSON" in model_type else None
+    )
+except Exception as e:
+    error_tracker = st.session_state.get('error_tracker')
+    if error_tracker:
+        error_tracker.log_error(
+            "VALIDATION_ERROR",
+            f"Error during validation: {str(e)}",
+            traceback.format_exc()
+        )
+    # Create a minimal validation report
+    validation_report = {
+        "status": "⚠️ VALIDATION SKIPPED",
+        "overall": f"Validation error: {str(e)}",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "errors": ["Validation could not be completed"],
+        "warnings": [],
+        "passed": [],
+        "summary": {"total_checks": 0, "passed": 0, "warnings": 0, "errors": 1}
+    }
 
 # ==============================================================================
 # 7. DISPLAY LAYER WITH VALIDATION
@@ -819,6 +1209,15 @@ with grid4:
     )
 
 st.markdown("---")
+
+# === ERROR TRACKER DISPLAY ===
+error_tracker = st.session_state.get('error_tracker')
+if error_tracker and error_tracker.error_count > 0:
+    st.warning(f"⚠️ {error_tracker.error_count} error(s) telah terjadi selama sesi ini.")
+    if st.button("📋 Tampilkan Detail Error"):
+        with st.expander("🔍 Detailed Error Report", expanded=True):
+            error_tracker.display_error_report()
+    st.markdown("---")
 
 # === VALIDATION DETAILS ===
 with st.expander("🔍 AI VALIDATION AGENT REPORT - Click to expand", expanded=True):
@@ -933,3 +1332,15 @@ with audit_r:
                 f"Kesimpulan             : {validation_report['overall']}"
             ), height=110
         )
+
+# ==============================================================================
+# 8. ADDITIONAL DEBUG INFO (Hidden by default)
+# ==============================================================================
+with st.expander("🔧 Debug Information (Hidden)", expanded=False):
+    st.json({
+        "model_type": model_type,
+        "components": selected_comps,
+        "session_state_keys": list(st.session_state.keys()),
+        "error_count": error_tracker.error_count if error_tracker else 0,
+        "mode_switch_count": st.session_state.get('mode_switch_count', 0)
+    })
