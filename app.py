@@ -5,6 +5,12 @@ from scipy.optimize import bisect
 import requests
 import gc
 import warnings
+import bcrypt
+
+SUPABASE_URL = st.secrets["supabase"]["url"]
+SUPABASE_KEY = st.secrets["supabase"]["anon_key"]
+SERVICE_KEY = st.secrets["supabase"]["service_key"]
+
 warnings.filterwarnings('ignore')
 
 # Set konfigurasi layout dashboard industri
@@ -13,33 +19,33 @@ st.set_page_config(layout="wide", page_title="PREMIUM PROCESS ENGINEERING SIMULA
 # ==============================================================================
 # SECURE CONFIGURATION: KONEKSI DATABASE SUPABASE
 # ==============================================================================
-SUPABASE_URL = "https://mdlwswglvslxnwymvueq.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kbHdzd2dsdnNseG53eW12dWVxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MDgzODIsImV4cCI6MjA5OTI4NDM4Mn0.mrnY9pYigBcnIR_Sjt68ja-Ipjsq8a7Sklli72Y-5Rw"
 
 def check_database_auth(username, password):
-    """Memverifikasi username, password, dan status aktif langganan ke Cloud Database."""
     headers = {
         "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}"
+        "Authorization": f"Bearer {SERVICE_KEY}"
     }
-    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&password_hash=eq.{password}"
+    
+    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=username,password_hash,is_active"
+    
     try:
         response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
         
-        if isinstance(data, dict) and "message" in data:
-            return f"SERVER_ERROR: {data['message']}"
+        if data and len(data) > 0:
+            user = data[0]
+            if not user.get('is_active', False):
+                return "EXPIRED"
             
-        if isinstance(data, list) and len(data) > 0:
-            user_record = data[0]
-            if user_record.get('is_active', False):
+            stored_hash = user.get('password_hash', '')
+            if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
                 return "SUCCESS"
             else:
-                return "EXPIRED"
-        return "FAILED"
+                return "FAILED"
+        else:
+            return "FAILED"
     except Exception as e:
         return f"KONEKSI_ERROR: {str(e)}"
-
 # ==============================================================================
 # GATEWAY SCREEN: TAMPILAN INTERFAKS LOGIN PENGGUNA
 # ==============================================================================
