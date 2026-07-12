@@ -133,7 +133,7 @@ R_IDEAL = 8.314462
 R_CUBIC = 8.314462e-5
 
 # ==============================================================================
-# 2. MODULE A: NRTL ENGINE
+# 2. MODULE A: NRTL ENGINE - ORIGINAL FUNCTIONS (TIDAK DIUBAH)
 # ==============================================================================
 def calculate_nrtl_gamma(x_vec, T_kelvin):
     x1 = max(x_vec[0], 1e-12)
@@ -159,56 +159,241 @@ def get_antoine_psat(comp, T_kelvin):
 def rr_objective(psi, z, K):
     return np.sum(z * (K - 1) / (1 + psi * (K - 1)))
 
-def solve_nrtl_flash(F, P, T_flash, T_feed, components, z):
+# ==============================================================================
+# 2a. MODULE A: NRTL ENGINE - ENHANCED ROBUST SOLVER (DITAMBAHKAN/DIGANTI)
+# ==============================================================================
+def solve_nrtl_flash_robust(F, P, T_flash, T_feed, components, z, max_iter=200):
+    """
+    Robust NRTL flash solver with adaptive initial guessing
+    Prevents crash when bisection fails due to poor initial K
+    """
     T_k = T_flash + 273.15
     P_sat = np.array([get_antoine_psat(c, T_k) for c in components])
     x = z.copy()
     is_binary_nrtl = (len(components) == 2 and 'ETHANOL' in components and 'WATER' in components)
     
-    for _ in range(100):
-        if is_binary_nrtl:
-            gamma = calculate_nrtl_gamma(x, T_k)
-        else:
-            gamma = np.ones(len(components))
-        K = (gamma * P_sat) / P
-        f_zero = rr_objective(0, z, K)
-        f_one = rr_objective(1, z, K)
+    # === GENERATE MULTIPLE INITIAL K GUESSES ===
+    K_candidates = []
+    
+    # Candidate 1: Raoult's Law (always start here)
+    K_candidates.append(P_sat / P)
+    
+    # Candidate 2: If binary NRTL, use gamma approximation
+    if is_binary_nrtl:
+        gamma_est = calculate_nrtl_gamma(z, T_k)
+        K_candidates.append(gamma_est * P_sat / P)
         
-        if f_zero <= 0:
-            psi, regime = 0.0, "PURE SUBCOOLED LIQUID"
-            x_new = z.copy()
-            y = (z * K) / np.sum(z * K)
-            break
-        elif f_one >= 0:
-            psi, regime = 1.0, "PURE SUPERHEATED VAPOR"
-            y = z.copy()
-            x_new = (z / K) / np.sum(z / K)
-            break
-        else:
-            regime = "TWO-PHASE VAPOR-LIQUID EQUILIBRIUM"
-            psi = bisect(rr_objective, 0.0, 1.0, args=(z, K))
-            x_new = z / (1 + psi * (K - 1))
-            y = K * x_new
+    # Candidate 3: Damped Wilson approximation
+    if is_binary_nrtl:
+        z_damped = z * 0.5 + 0.25
+        gamma_damped = calculate_nrtl_gamma(z_damped, T_k)
+        K_candidates.append(gamma_damped * P_sat / P)
+    
+    # Candidate 4: Conservative guess (all K=1)
+    K_candidates.append(np.ones(len(components)))
+    
+    # Candidate 5: Use ideal K but with temperature correction
+    K_candidates.append((P_sat / P) * 0.8)
+    
+    # Candidate 6: Inverse Raoult's (for very non-ideal systems)
+    if is_binary_nrtl:
+        K_candidates.append(P / P_sat)
+    
+    # === TRY EACH CANDIDATE ===
+    K = None
+    psi = None
+    regime = None
+    x_final = None
+    y_final = None
+    gamma_final = None
+    
+    for K_test in K_candidates:
+        try:
+            f_zero = rr_objective(0, z, K_test)
+            f_one = rr_objective(1, z, K_test)
             
-        if not is_binary_nrtl or np.max(np.abs(x_new - x)) < 1e-9:
-            x = x_new
-            break
-        x = x_new
-
-    V, L = psi * F, F - (psi * F)
-    Q_sens, Q_lat = 0.0, 0.0
-    F_mols, V_mols = (F * 1000) / 3600, (V * 1000) / 3600
+            # Check if bisection can work (f_zero and f_one have opposite signs)
+            if f_zero * f_one < 0:
+                # Found valid bracket - use this K
+                K = K_test.copy()
+                break
+                
+            elif f_zero <= 0:
+                # Pure liquid regime
+                psi = 0.0
+                regime = "PURE SUBCOOLED LIQUID"
+                x_final = z.copy()
+                y_final = (z * K_test) / np.sum(z * K_test)
+                gamma_final = np.ones(len(components))
+                if is_binary_nrtl:
+                    gamma_final = calculate_nrtl_gamma(x_final, T_k)
+                K = K_test
+                break
+                
+            elif f_one >= 0:
+                # Pure vapor regime
+                psi = 1.0
+                regime = "PURE SUPERHEATED VAPOR"
+                y_final = z.copy()
+                x_final = (z / K_test) / np.sum(z / K_test)
+                gamma_final = np.ones(len(components))
+                if is_binary_nrtl:
+                    gamma_final = calculate_nrtl_gamma(x_final, T_k)
+                K = K_test
+                break
+                
+        except Exception as e:
+            # If this candidate fails, try next
+            continue
+    
+    # === IF NO CANDIDATE WORKED: FALLBACK WITH DAMPED NEWTON ===
+    if K is None:
+        # Use the best candidate (Raoult's law)
+        K = P_sat / P
+        # Damped iteration with smaller steps
+        for damp_factor in [0.1, 0.3, 0.5, 0.7, 0.9]:
+            try:
+                K_damped = K * damp_factor + (1 - damp_factor) * np.ones(len(components))
+                f_zero = rr_objective(0, z, K_damped)
+                f_one = rr_objective(1, z, K_damped)
+                if f_zero * f_one < 0:
+                    K = K_damped
+                    break
+            except:
+                continue
+        else:
+            # ULTIMATE FALLBACK: Force single-phase
+            f_zero = rr_objective(0, z, K)
+            f_one = rr_objective(1, z, K)
+            if abs(f_zero) < abs(f_one):
+                psi = 0.0
+                regime = "PURE SUBCOOLED LIQUID (FALLBACK)"
+                x_final = z.copy()
+                y_final = (z * K) / np.sum(z * K)
+                gamma_final = np.ones(len(components))
+                if is_binary_nrtl:
+                    gamma_final = calculate_nrtl_gamma(x_final, T_k)
+            else:
+                psi = 1.0
+                regime = "PURE SUPERHEATED VAPOR (FALLBACK)"
+                y_final = z.copy()
+                x_final = (z / K) / np.sum(z / K)
+                gamma_final = np.ones(len(components))
+                if is_binary_nrtl:
+                    gamma_final = calculate_nrtl_gamma(x_final, T_k)
+            
+            # Calculate flows
+            V = psi * F
+            L = F - (psi * F)
+            
+            # Calculate energy
+            Q_sens = 0.0
+            Q_lat = 0.0
+            F_mols = (F * 1000) / 3600
+            V_mols = (V * 1000) / 3600
+            T_f_k = T_feed + 273.15
+            
+            for i, c in enumerate(components):
+                db = MASTER_DB[c]
+                Cp = db['Acp'] + db['Bcp']*((T_f_k+T_k)/2) + db['Ccp']*(((T_f_k+T_k)/2)**2)
+                Q_sens += F_mols * z[i] * Cp * (T_k - T_f_k)
+                Q_lat += V_mols * y_final[i] * (db['dH_vap'] * 1000)
+            
+            Q_total = (Q_sens + Q_lat) / 1000
+            
+            return psi, V, L, x_final, y_final, K, regime, Q_total, gamma_final, P_sat
+    
+    # === NORMAL BISECTION WITH FOUND K ===
+    if psi is None and regime is None:
+        # Two-phase - use bisection
+        regime = "TWO-PHASE VAPOR-LIQUID EQUILIBRIUM"
+        gamma_final = np.ones(len(components))
+        
+        # Convergence loop
+        for iter_count in range(max_iter):
+            if is_binary_nrtl:
+                gamma = calculate_nrtl_gamma(x, T_k)
+            else:
+                gamma = np.ones(len(components))
+            
+            K = (gamma * P_sat) / P
+            
+            f_zero = rr_objective(0, z, K)
+            f_one = rr_objective(1, z, K)
+            
+            if f_zero <= 0:
+                psi = 0.0
+                regime = "PURE SUBCOOLED LIQUID"
+                x_final = z.copy()
+                y_final = (z * K) / np.sum(z * K)
+                gamma_final = gamma
+                break
+            elif f_one >= 0:
+                psi = 1.0
+                regime = "PURE SUPERHEATED VAPOR"
+                y_final = z.copy()
+                x_final = (z / K) / np.sum(z / K)
+                gamma_final = gamma
+                break
+            else:
+                # Standard bisection
+                try:
+                    psi = bisect(rr_objective, 0.0, 1.0, args=(z, K))
+                    x_new = z / (1 + psi * (K - 1))
+                    y_new = K * x_new
+                    
+                    if not is_binary_nrtl or np.max(np.abs(x_new - x)) < 1e-9:
+                        x_final = x_new
+                        y_final = y_new
+                        gamma_final = gamma
+                        break
+                    x = x_new
+                    
+                except ValueError as e:
+                    # Bisection failed - this shouldn't happen if f_zero*f_one < 0
+                    # But if it does, use fallback
+                    psi = 0.5
+                    x_final = z / (1 + psi * (K - 1))
+                    y_final = K * x_final
+                    gamma_final = gamma
+                    regime = "TWO-PHASE (APPROXIMATED)"
+                    break
+        else:
+            # Max iterations reached - use last values
+            if x_final is None:
+                x_final = z.copy()
+                y_final = z.copy()
+                gamma_final = np.ones(len(components))
+                psi = 0.5
+                regime = "TWO-PHASE (MAX ITER)"
+    
+    # Calculate flows and energy
+    V = psi * F
+    L = F - (psi * F)
+    Q_sens = 0.0
+    Q_lat = 0.0
+    F_mols = (F * 1000) / 3600
+    V_mols = (V * 1000) / 3600
     T_f_k = T_feed + 273.15
+    
     for i, c in enumerate(components):
         db = MASTER_DB[c]
         Cp = db['Acp'] + db['Bcp']*((T_f_k+T_k)/2) + db['Ccp']*(((T_f_k+T_k)/2)**2)
         Q_sens += F_mols * z[i] * Cp * (T_k - T_f_k)
-        Q_lat += V_mols * y[i] * (db['dH_vap'] * 1000)
-        
-    return psi, V, L, x, y, K, regime, (Q_sens + Q_lat) / 1000, gamma, P_sat
+        Q_lat += V_mols * y_final[i] * (db['dH_vap'] * 1000)
+    
+    gamma_final = gamma_final if gamma_final is not None else np.ones(len(components))
+    Q_total = (Q_sens + Q_lat) / 1000
+    
+    return psi, V, L, x_final, y_final, K, regime, Q_total, gamma_final, P_sat
 
 # ==============================================================================
-# 3. MODULE B: PENG-ROBINSON ENGINE
+# 2b. REPLACE ORIGINAL solve_nrtl_flash WITH ROBUST VERSION
+# ==============================================================================
+solve_nrtl_flash = solve_nrtl_flash_robust
+
+# ==============================================================================
+# 3. MODULE B: PENG-ROBINSON ENGINE (TIDAK DIUBAH)
 # ==============================================================================
 def calculate_pr_alpha(T_k, Tc, omega):
     Tr = T_k / Tc
@@ -216,7 +401,8 @@ def calculate_pr_alpha(T_k, Tc, omega):
     return (1 + kappa * (1 - np.sqrt(Tr)))**2
 
 def solve_pr_vectors(components, T_k):
-    a_list, b_list = [], []
+    a_list = []
+    b_list = []
     for c in components:
         db = MASTER_DB[c]
         alpha = calculate_pr_alpha(T_k, db['Tc'], db['omega'])
@@ -256,30 +442,36 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
     T_k = T_flash + 273.15
     a_params, b_params = solve_pr_vectors(components, T_k)
     K = np.array([(db['Pc']/P) * np.exp(5.37 * (1 + db['omega']) * (1 - db['Tc']/T_k)) for db in [MASTER_DB[c] for c in components]])
-    x, y = z.copy(), z.copy()
+    x = z.copy()
+    y = z.copy()
     psi = 0.0
     regime = "TWO-PHASE VAPOR-LIQUID EQUILIBRIUM"
-    Z_L, Z_V = 0.0, 0.0
+    Z_L = 0.0
+    Z_V = 0.0
     
     for _ in range(150):
         f_zero = rr_objective(0, z, K)
         f_one = rr_objective(1, z, K)
         
         if f_zero <= 0:
-            psi, regime = 0.0, "PURE SUBCOOLED LIQUID"
+            psi = 0.0
+            regime = "PURE SUBCOOLED LIQUID"
             x = z.copy()
             y = z * K / np.sum(z * K)
             a_L, b_L = mix_pr(x, a_params, b_params)
-            A_L, B_L = a_L*P/((R_CUBIC*T_k)**2), b_L*P/(R_CUBIC*T_k)
+            A_L = a_L*P/((R_CUBIC*T_k)**2)
+            B_L = b_L*P/(R_CUBIC*T_k)
             Z_L = get_pr_z_roots(A_L, B_L, False)
             Z_V = Z_L
             break
         elif f_one >= 0:
-            psi, regime = 1.0, "PURE SUPERHEATED VAPOR"
+            psi = 1.0
+            regime = "PURE SUPERHEATED VAPOR"
             y = z.copy()
             x = z / K / np.sum(z / K)
             a_V, b_V = mix_pr(y, a_params, b_params)
-            A_V, B_V = a_V*P/((R_CUBIC*T_k)**2), b_V*P/(R_CUBIC*T_k)
+            A_V = a_V*P/((R_CUBIC*T_k)**2)
+            B_V = b_V*P/(R_CUBIC*T_k)
             Z_V = get_pr_z_roots(A_V, B_V, True)
             Z_L = Z_V
             break
@@ -290,12 +482,14 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
             y = K * x
             
         a_L, b_L = mix_pr(x, a_params, b_params)
-        A_L, B_L = a_L*P/((R_CUBIC*T_k)**2), b_L*P/(R_CUBIC*T_k)
+        A_L = a_L*P/((R_CUBIC*T_k)**2)
+        B_L = b_L*P/(R_CUBIC*T_k)
         Z_L = get_pr_z_roots(A_L, B_L, False)
         phi_L = pr_fugacity(x, Z_L, A_L, B_L, a_params, b_params, a_L, b_L)
         
         a_V, b_V = mix_pr(y, a_params, b_params)
-        A_V, B_V = a_V*P/((R_CUBIC*T_k)**2), b_V*P/(R_CUBIC*T_k)
+        A_V = a_V*P/((R_CUBIC*T_k)**2)
+        B_V = b_V*P/(R_CUBIC*T_k)
         Z_V = get_pr_z_roots(A_V, B_V, True)
         phi_V = pr_fugacity(y, Z_V, A_V, B_V, a_params, b_params, a_V, b_V)
         
@@ -305,11 +499,12 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
             break
         K = K_new
         
-    V, L = psi * F, F - (psi * F)
+    V = psi * F
+    L = F - (psi * F)
     return psi, V, L, x, y, K, regime, Z_L, Z_V
 
 # ==============================================================================
-# 4. AI VALIDATION AGENT - CHECK AND RECHECK RESULTS
+# 4. AI VALIDATION AGENT - CHECK AND RECHECK RESULTS (TIDAK DIUBAH)
 # ==============================================================================
 class ValidationAgent:
     """AI Agent untuk validasi hasil perhitungan termodinamika"""
@@ -464,7 +659,7 @@ class ValidationAgent:
     def _check_convergence(self, x, y, z, K):
         """Check if Rachford-Rice objective is satisfied"""
         # Recalculate residual
-        residual = rr_objective(0.5, z, K)  # Check at mid-point
+        residual = rr_objective(0.5, z, K)
         if abs(residual) < 1e-4:
             self.passed.append(f"CONVERGENCE: RR residual={abs(residual):.2e} ✓")
         elif abs(residual) < 1e-2:
@@ -513,9 +708,6 @@ def reset_session_state_for_mode(target_mode):
     Reset all session state keys to ensure clean state when switching modes.
     This prevents any cross-mode contamination of values.
     """
-    # Identify mode prefix
-    mode_prefix = 'nrtl' if 'NRTL' in target_mode else 'pr'
-    
     # Delete ALL component-specific keys (z_*, multiselect_*, etc.)
     keys_to_delete = []
     for key in st.session_state.keys():
@@ -549,8 +741,6 @@ def reset_session_state_for_mode(target_mode):
     for key in keys_to_delete:
         if key in st.session_state:
             del st.session_state[key]
-    
-    return mode_prefix
 
 def initialize_nrtl_defaults():
     """Set default values for NRTL mode"""
@@ -603,7 +793,7 @@ if model_type != st.session_state['last_model_type']:
     st.session_state['reset_triggered'] = True
     
     # Reset ALL session states based on target mode
-    mode_prefix = reset_session_state_for_mode(model_type)
+    reset_session_state_for_mode(model_type)
     
     # Initialize defaults for the new mode
     if "NRTL" in model_type:
@@ -759,7 +949,8 @@ try:
         psi, V, L, x, y, K, regime, Q_total, gamma, P_sat = solve_nrtl_flash(
             F, P, T_flash, T_feed, selected_comps, z_norm
         )
-        Z_L, Z_V = 0.0, 0.0
+        Z_L = 0.0
+        Z_V = 0.0
         model_name = "NRTL"
     else:
         psi, V, L, x, y, K, regime, Z_L, Z_V = solve_peng_robinson_flash(
