@@ -701,7 +701,58 @@ st.title("⚡ SIMULATOR FLASH INTEGRAL PARIPURNA — CORES GABUNGAN NRTL & PENG-
 st.markdown("---")
 
 # ==============================================================================
-# 5a. STATE INITIALIZATION
+# 5a. HELPER FUNCTIONS UNTUK SAFE DEFAULT VALUES
+# ==============================================================================
+def safe_get(key, default):
+    """Safe get from session state with fallback default"""
+    if key in st.session_state:
+        return st.session_state[key]
+    else:
+        st.session_state[key] = default
+        return default
+
+def safe_del(key):
+    """Safe delete from session state"""
+    if key in st.session_state:
+        del st.session_state[key]
+
+def reset_nrtl_state():
+    """Reset all NRTL-related state"""
+    # Hapus semua key yang berhubungan dengan NRTL
+    for key in list(st.session_state.keys()):
+        if key.startswith('z_') and '_nrtl' in key:
+            safe_del(key)
+        elif key.startswith('multiselect_nrtl'):
+            safe_del(key)
+    safe_del('selected_comps_nrtl')
+    # Set default
+    st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
+    st.session_state['z_ETHANOL_nrtl'] = 0.5
+    st.session_state['z_WATER_nrtl'] = 0.5
+    st.session_state['F_input'] = 100.0
+    st.session_state['P_input'] = 1.013
+    st.session_state['T_flash_input'] = 78.2
+    st.session_state['T_feed_input'] = 25.0
+
+def reset_pr_state():
+    """Reset all PR-related state"""
+    # Hapus semua key yang berhubungan dengan PR
+    for key in list(st.session_state.keys()):
+        if key.startswith('z_') and '_pr' in key:
+            safe_del(key)
+        elif key.startswith('multiselect_pr'):
+            safe_del(key)
+    safe_del('selected_comps_pr')
+    # Set default
+    st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
+    st.session_state['z_PROPANE_pr'] = 0.5
+    st.session_state['z_N-BUTANE_pr'] = 0.5
+    st.session_state['F_input'] = 100.0
+    st.session_state['P_input'] = 12.0
+    st.session_state['T_flash_input'] = 55.0
+
+# ==============================================================================
+# 5b. INITIALIZE SESSION STATE DENGAN SAFE DEFAULT
 # ==============================================================================
 if 'model_type' not in st.session_state:
     st.session_state['model_type'] = "NRTL (Sistem Cairan Non-Ideal/Polar)"
@@ -709,73 +760,24 @@ if 'model_type' not in st.session_state:
 if 'last_model_type' not in st.session_state:
     st.session_state['last_model_type'] = st.session_state['model_type']
 
-if 'reset_triggered' not in st.session_state:
-    st.session_state['reset_triggered'] = False
-
-if 'pending_mode_switch' not in st.session_state:
-    st.session_state['pending_mode_switch'] = False
-
-if 'target_mode' not in st.session_state:
-    st.session_state['target_mode'] = st.session_state['model_type']
-
-if 'switch_executed' not in st.session_state:
-    st.session_state['switch_executed'] = False
-
-# ==============================================================================
-# 5b. HANDLE PENDING MODE SWITCH (DI EKSEKUSI DI AWAL SETIAP RUN)
-# ==============================================================================
-if st.session_state.get('pending_mode_switch', False):
-    target_mode = st.session_state.get('target_mode', 'NRTL')
-    
-    # Reset ALL component-specific keys
-    keys_to_delete = []
-    for key in list(st.session_state.keys()):
-        if key.startswith('z_'):
-            keys_to_delete.append(key)
-        elif key.startswith('multiselect_'):
-            keys_to_delete.append(key)
-        elif key in ['selected_comps_nrtl', 'selected_comps_pr']:
-            keys_to_delete.append(key)
-        elif key in ['F_input', 'P_input', 'T_flash_input', 'T_feed_input']:
-            keys_to_delete.append(key)
-    
-    for key in keys_to_delete:
-        if key in st.session_state:
-            del st.session_state[key]
-    
-    # Initialize defaults based on target mode
-    if "NRTL" in target_mode:
+# Initialize defaults based on current model
+if "NRTL" in st.session_state['model_type']:
+    if 'selected_comps_nrtl' not in st.session_state:
         st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
-        st.session_state['F_input'] = 100.0
-        st.session_state['P_input'] = 1.013
-        st.session_state['T_flash_input'] = 78.2
-        st.session_state['T_feed_input'] = 25.0
-        if 'z_ETHANOL_nrtl' not in st.session_state:
-            st.session_state['z_ETHANOL_nrtl'] = 0.5
-        if 'z_WATER_nrtl' not in st.session_state:
-            st.session_state['z_WATER_nrtl'] = 0.5
-        if 'selected_comps_pr' in st.session_state:
-            del st.session_state['selected_comps_pr']
-    else:
+    if 'z_ETHANOL_nrtl' not in st.session_state:
+        st.session_state['z_ETHANOL_nrtl'] = 0.5
+    if 'z_WATER_nrtl' not in st.session_state:
+        st.session_state['z_WATER_nrtl'] = 0.5
+else:
+    if 'selected_comps_pr' not in st.session_state:
         st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
-        st.session_state['F_input'] = 100.0
-        st.session_state['P_input'] = 12.0
-        st.session_state['T_flash_input'] = 55.0
-        if 'z_PROPANE_pr' not in st.session_state:
-            st.session_state['z_PROPANE_pr'] = 0.5
-        if 'z_N-BUTANE_pr' not in st.session_state:
-            st.session_state['z_N-BUTANE_pr'] = 0.5
-        if 'selected_comps_nrtl' in st.session_state:
-            del st.session_state['selected_comps_nrtl']
-    
-    st.session_state['model_type'] = target_mode
-    st.session_state['last_model_type'] = target_mode
-    st.session_state['pending_mode_switch'] = False
-    st.session_state['reset_triggered'] = False
-    st.session_state['switch_executed'] = True
+    if 'z_PROPANE_pr' not in st.session_state:
+        st.session_state['z_PROPANE_pr'] = 0.5
+    if 'z_N-BUTANE_pr' not in st.session_state:
+        st.session_state['z_N-BUTANE_pr'] = 0.5
 
 # ==============================================================================
-# 5c. MODEL SELECTION (PROSES INPUT USER)
+# 5c. MODEL SELECTION DENGAN HANDLING SWITCH
 # ==============================================================================
 model_type = st.sidebar.selectbox(
     "PILIH MODEL TERMODINAMIKA (ENGINE)", 
@@ -784,39 +786,52 @@ model_type = st.sidebar.selectbox(
 )
 
 # ==============================================================================
-# 5d. DETEKSI PERUBAHAN MODE OLEH USER
+# 5d. HANDLE SWITCH MODE DENGAN RESET TOTAL
 # ==============================================================================
 if model_type != st.session_state.get('last_model_type', ''):
-    # SET FLAG UNTUK SWITCH DI RUN BERIKUTNYA
+    # Reset ALL state terlebih dahulu
+    for key in list(st.session_state.keys()):
+        if key.startswith('z_'):
+            safe_del(key)
+        elif key.startswith('multiselect_'):
+            safe_del(key)
+        elif key in ['selected_comps_nrtl', 'selected_comps_pr']:
+            safe_del(key)
+    
+    # Set mode baru
     st.session_state['last_model_type'] = model_type
-    st.session_state['target_mode'] = model_type
-    st.session_state['pending_mode_switch'] = True
-    st.session_state['switch_executed'] = False
-    st.rerun()
-
+    
+    if "NRTL" in model_type:
+        reset_nrtl_state()
+    else:
+        reset_pr_state()
+    
+    st.session_state['model_type'] = model_type
+    
+    # JANGAN PAKAI st.rerun() - biarkan Streamlit refresh naturally
+    
 # Update model_type di session state
 st.session_state['model_type'] = model_type
 
 # ==============================================================================
-# 5e. SIDEBAR INPUTS
+# 5e. SIDEBAR INPUTS - SEMUA DENGAN SAFE GET
 # ==============================================================================
 st.sidebar.markdown("---")
 st.sidebar.header("📋 UTILITY & PARAMETER OPERASI")
 
-# Get F value with safe default
-default_F = st.session_state.get('F_input', 100.0)
+# Get F value dengan safe get
 F = st.sidebar.number_input(
     "Laju Massa Umpan (F) [kmol/h]", 
     min_value=0.1, 
-    value=default_F, 
+    value=safe_get('F_input', 100.0), 
     key="F_input"
 )
 
-# Get P value with safe default based on mode
+# Get P value dengan safe get berdasarkan mode
 if "NRTL" in model_type:
-    default_P = st.session_state.get('P_input', 1.013)
+    default_P = safe_get('P_input', 1.013)
 else:
-    default_P = st.session_state.get('P_input', 12.0)
+    default_P = safe_get('P_input', 12.0)
 P = st.sidebar.number_input(
     "Tekanan Alat Separator (P) [bar]", 
     min_value=0.01, 
@@ -824,11 +839,11 @@ P = st.sidebar.number_input(
     key="P_input"
 )
 
-# Get T_flash value with safe default based on mode
+# Get T_flash value dengan safe get berdasarkan mode
 if "NRTL" in model_type:
-    default_T_flash = st.session_state.get('T_flash_input', 78.2)
+    default_T_flash = safe_get('T_flash_input', 78.2)
 else:
-    default_T_flash = st.session_state.get('T_flash_input', 55.0)
+    default_T_flash = safe_get('T_flash_input', 55.0)
 T_flash = st.sidebar.number_input(
     "Suhu Operasi Alat (T_flash) [°C]", 
     value=default_T_flash, 
@@ -838,7 +853,7 @@ T_flash = st.sidebar.number_input(
 # T_feed only for NRTL
 T_feed = 25.0
 if "NRTL" in model_type:
-    default_T_feed = st.session_state.get('T_feed_input', 25.0)
+    default_T_feed = safe_get('T_feed_input', 25.0)
     T_feed = st.sidebar.number_input(
         "Suhu Masuk Umpan (T_feed) [°C]", 
         value=default_T_feed, 
@@ -846,22 +861,18 @@ if "NRTL" in model_type:
     )
 
 # ==============================================================================
-# 5f. COMPONENT SELECTION
+# 5f. COMPONENT SELECTION - DENGAN SAFE GET
 # ==============================================================================
 st.sidebar.markdown("---")
 st.sidebar.header("🧪 INPUT SPECIES COMPONENT")
 
 if "NRTL" in model_type:
     available_comps = ['ETHANOL', 'WATER', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
-    if 'selected_comps_nrtl' not in st.session_state:
-        st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
-    default_comps = st.session_state['selected_comps_nrtl']
+    default_comps = safe_get('selected_comps_nrtl', ['ETHANOL', 'WATER'])
     mode_key = 'nrtl'
 else:
     available_comps = ['PROPANE', 'N-BUTANE', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
-    if 'selected_comps_pr' not in st.session_state:
-        st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
-    default_comps = st.session_state['selected_comps_pr']
+    default_comps = safe_get('selected_comps_pr', ['PROPANE', 'N-BUTANE'])
     mode_key = 'pr'
 
 selected_comps = st.sidebar.multiselect(
@@ -878,7 +889,7 @@ else:
     st.session_state['selected_comps_pr'] = selected_comps
 
 # ==============================================================================
-# 5g. COMPOSITION INPUTS
+# 5g. COMPOSITION INPUTS - DENGAN SAFE GET
 # ==============================================================================
 st.sidebar.subheader("Fraksi Mol Komponen Masuk (z_i)")
 
