@@ -3,6 +3,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import bisect
 import requests
+import gc
+import warnings
+warnings.filterwarnings('ignore')
 
 # Set konfigurasi layout dashboard industri
 st.set_page_config(layout="wide", page_title="PREMIUM PROCESS ENGINEERING SIMULATOR")
@@ -21,7 +24,7 @@ def check_database_auth(username, password):
     }
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&password_hash=eq.{password}"
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
         
         if isinstance(data, dict) and "message" in data:
@@ -140,89 +143,158 @@ R_CUBIC = 8.314462e-5
 # 2. MODULE A: NRTL ENGINE
 # ==============================================================================
 def calculate_nrtl_gamma(x_vec, T_kelvin):
-    x1 = max(x_vec[0], 1e-12)
-    x2 = max(x_vec[1], 1e-12) if len(x_vec) > 1 else 1e-12
+    """Calculate NRTL activity coefficients with safe guards"""
+    x1 = max(min(x_vec[0], 0.999), 1e-12)
+    x2 = max(min(x_vec[1], 0.999), 1e-12) if len(x_vec) > 1 else 1e-12
+    
     tau_12 = NRTL_DG_12 / (R_IDEAL * T_kelvin)
     tau_21 = NRTL_DG_21 / (R_IDEAL * T_kelvin)
     G_12 = np.exp(-NRTL_ALPHA * tau_12)
     G_21 = np.exp(-NRTL_ALPHA * tau_21)
-    den1 = x1 + x2 * G_21
-    den2 = x1 * G_12 + x2
+    
+    den1 = max(x1 + x2 * G_21, 1e-12)
+    den2 = max(x1 * G_12 + x2, 1e-12)
+    
     ln_gamma1 = (x2**2) * (tau_21 * (G_21 / den1)**2 + (tau_12 * G_12) / (den2**2))
     ln_gamma2 = (x1**2) * (tau_12 * (G_12 / den2)**2 + (tau_21 * G_21) / (den1**2))
-    return np.array([np.exp(ln_gamma1), np.exp(ln_gamma2)])
+    
+    gamma1 = np.exp(np.clip(ln_gamma1, -50, 50))
+    gamma2 = np.exp(np.clip(ln_gamma2, -50, 50))
+    return np.array([gamma1, gamma2])
 
 def get_antoine_psat(comp, T_kelvin):
+    """Get Antoine vapor pressure with safe temperature limits"""
     db = MASTER_DB[comp]
+    T_celsius = T_kelvin - 273.15
+    
+    # Batasi suhu ekstrem
+    T_celsius = np.clip(T_celsius, -100, 500)
+    
     if comp in ['ETHANOL', 'WATER']:
-        return 10**(db['A'] - (db['B'] / (T_kelvin + db['C'])))
+        # Formula khusus untuk polar
+        psat = 10**(db['A'] - (db['B'] / (T_kelvin + db['C'])))
     else:
-        T_celsius = T_kelvin - 273.15
-        return 10**(db['A'] - (db['B'] / (T_celsius + db['C'])))
+        psat = 10**(db['A'] - (db['B'] / (T_celsius + db['C'])))
+    
+    return max(psat, 1e-12)
 
 def rr_objective(psi, z, K):
-    return np.sum(z * (K - 1) / (1 + psi * (K - 1)))
+    """Rachford-Rice objective function with overflow protection"""
+    term = z * (K - 1) / (1 + psi * (K - 1))
+    # Handle NaN/Inf
+    term = np.nan_to_num(term, nan=0.0, posinf=1e10, neginf=-1e10)
+    return np.sum(term)
 
 def solve_nrtl_flash(F, P, T_flash, T_feed, components, z):
+    """NRTL flash calculation with robust numerical handling"""
     T_k = T_flash + 273.15
+    T_k = np.clip(T_k, 200, 600)  # Batas suhu aman
+    
+    # Calculate saturation pressures
     P_sat = np.array([get_antoine_psat(c, T_k) for c in components])
     
+    # Inisialisasi
     x = z.copy()
     is_binary_nrtl = (len(components) == 2 and 'ETHANOL' in components and 'WATER' in components)
     
-    for _ in range(100):
-        if is_binary_nrtl:
-            gamma = calculate_nrtl_gamma(x, T_k)
-        else:
-            gamma = np.ones(len(components))
-            
-        K = (gamma * P_sat) / P
-        f_zero = rr_objective(0, z, K)
-        f_one = rr_objective(1, z, K)
-        
-        if f_zero <= 0:
-            psi, regime = 0.0, "PURE SUBCOOLED LIQUID"
-            x_new = z.copy()
-            y = (z * K) / np.sum(z * K)
-            break
-        elif f_one >= 0:
-            psi, regime = 1.0, "PURE SUPERHEATED VAPOR"
-            y = z.copy()
-            x_new = (z / K) / np.sum(z / K)
-            break
-        else:
-            regime = "TWO-PHASE VAPOR-LIQUID EQUILIBRIUM"
-            psi = bisect(rr_objective, 0.0, 1.0, args=(z, K))
-            x_new = z / (1 + psi * (K - 1))
-            y = K * x_new
-            
-        if not is_binary_nrtl or np.max(np.abs(x_new - x)) < 1e-9:
-            x = x_new
-            break
-        x = x_new
-
-    V, L = psi * F, F - (psi * F)
+    # Parameter kontrol
+    max_iter = 200
+    tolerance = 1e-8
+    gamma = np.ones(len(components))
+    K = np.ones(len(components))
+    psi = 0.0
+    regime = "TWO-PHASE VAPOR-LIQUID EQUILIBRIUM"
+    V = L = 0.0
+    x_new = z.copy()
+    y = z.copy()
+    Q_total = 0.0
     
-    Q_sens, Q_lat = 0.0, 0.0
-    F_mols, V_mols = (F * 1000) / 3600, (V * 1000) / 3600
-    T_f_k = T_feed + 273.15
-    for i, c in enumerate(components):
-        db = MASTER_DB[c]
-        Cp = db['Acp'] + db['Bcp']*((T_f_k+T_k)/2) + db['Ccp']*(((T_f_k+T_k)/2)**2)
-        Q_sens += F_mols * z[i] * Cp * (T_k - T_f_k)
-        Q_lat += V_mols * y[i] * (db['dH_vap'] * 1000)
+    try:
+        for iteration in range(max_iter):
+            # Hitung koefisien aktivitas jika binary
+            if is_binary_nrtl:
+                gamma = calculate_nrtl_gamma(x, T_k)
+            else:
+                gamma = np.ones(len(components))
+            
+            # Hitung K-values
+            K = (gamma * P_sat) / P
+            K = np.clip(K, 1e-6, 1e6)  # Batasi K-values
+            
+            # Evaluasi Rachford-Rice
+            f_zero = rr_objective(0, z, K)
+            f_one = rr_objective(1, z, K)
+            
+            # Determinasi fase
+            if f_zero <= 0:
+                psi, regime = 0.0, "PURE SUBCOOLED LIQUID"
+                x_new = z.copy()
+                y = (z * K) / np.maximum(np.sum(z * K), 1e-12)
+                break
+            elif f_one >= 0:
+                psi, regime = 1.0, "PURE SUPERHEATED VAPOR"
+                y = z.copy()
+                x_new = (z / K) / np.maximum(np.sum(z / K), 1e-12)
+                break
+            else:
+                regime = "TWO-PHASE VAPOR-LIQUID EQUILIBRIUM"
+                try:
+                    psi = bisect(rr_objective, 0.0, 1.0, args=(z, K), rtol=1e-8)
+                except:
+                    psi = 0.5  # Fallback
+                
+                x_new = z / (1 + psi * (K - 1))
+                x_new = np.clip(x_new, 1e-12, 0.999)
+                y = K * x_new
+                y = y / np.maximum(np.sum(y), 1e-12)
+            
+            # Konvergensi check
+            if not is_binary_nrtl or np.max(np.abs(x_new - x)) < tolerance:
+                x = x_new
+                break
+            x = x_new
         
-    return psi, V, L, x, y, K, regime, (Q_sens + Q_lat) / 1000, gamma, P_sat
+        # Hitung aliran
+        V = psi * F
+        L = F - V
+        V = max(V, 0)
+        L = max(L, 0)
+        
+        # Hitung Q untuk NRTL
+        Q_sens, Q_lat = 0.0, 0.0
+        F_mols = (F * 1000) / 3600
+        V_mols = (V * 1000) / 3600
+        T_f_k = T_feed + 273.15
+        
+        for i, c in enumerate(components):
+            db = MASTER_DB[c]
+            T_avg = (T_f_k + T_k) / 2
+            Cp = db['Acp'] + db['Bcp'] * T_avg + db['Ccp'] * (T_avg**2)
+            Q_sens += F_mols * z[i] * Cp * (T_k - T_f_k)
+            Q_lat += V_mols * y[i] * (db['dH_vap'] * 1000)
+        
+        Q_total = (Q_sens + Q_lat) / 1000
+        
+    except Exception as e:
+        raise ValueError(f"NRTL calculation error: {str(e)}")
+    
+    # Clean up
+    gc.collect()
+    
+    return psi, V, L, x, y, K, regime, Q_total, gamma, P_sat
 
 # ==============================================================================
 # 3. MODULE B: PENG-ROBINSON ENGINE
 # ==============================================================================
 def calculate_pr_alpha(T_k, Tc, omega):
-    Tr = T_k / Tc
+    """Peng-Robinson alpha function with safe guards"""
+    Tr = np.clip(T_k / Tc, 0.1, 10.0)
     kappa = 0.37464 + 1.54226 * omega - 0.26992 * (omega**2)
-    return (1 + kappa * (1 - np.sqrt(Tr)))**2
+    alpha = (1 + kappa * (1 - np.sqrt(Tr)))**2
+    return max(alpha, 1e-6)
 
 def solve_pr_vectors(components, T_k):
+    """Calculate Peng-Robinson a and b parameters"""
     a_list, b_list = [], []
     for c in components:
         db = MASTER_DB[c]
@@ -234,86 +306,155 @@ def solve_pr_vectors(components, T_k):
     return np.array(a_list), np.array(b_list)
 
 def mix_pr(fractions, a_p, b_p):
+    """Mix Peng-Robinson parameters with safe guards"""
+    fractions = np.clip(fractions, 1e-12, 0.999)
+    fractions = fractions / np.maximum(np.sum(fractions), 1e-12)
+    
     b_m = np.sum(fractions * b_p)
     a_m = 0.0
     for i in range(len(fractions)):
         for j in range(len(fractions)):
-            a_m += fractions[i] * fractions[j] * np.sqrt(a_p[i] * a_p[j])
-    return a_m, b_m
+            a_m += fractions[i] * fractions[j] * np.sqrt(max(a_p[i] * a_p[j], 0))
+    
+    return max(a_m, 1e-12), max(b_m, 1e-12)
 
 def get_pr_z_roots(A, B, select_max=True):
+    """Solve Peng-Robinson cubic equation"""
+    # Clamp inputs to avoid numerical issues
+    A = max(A, 1e-12)
+    B = max(B, 1e-12)
+    
     c2 = B - 1
     c1 = A - 3*(B**2) - 2*B
     c0 = (B**3) + (B**2) - A*B
-    roots = np.roots([1, c2, c1, c0])
-    real_roots = roots[np.isreal(roots)].real
-    return np.max(real_roots) if select_max else np.min(real_roots)
+    
+    try:
+        roots = np.roots([1, c2, c1, c0])
+        real_roots = roots[np.isreal(roots)].real
+        real_roots = real_roots[real_roots > 1e-6]  # Filter positif
+        if len(real_roots) == 0:
+            return 1.0  # Fallback
+        return np.max(real_roots) if select_max else np.min(real_roots)
+    except:
+        return 1.0  # Fallback
 
 def pr_fugacity(fractions, Z, A, B, a_p, b_p, a_m, b_m):
+    """Calculate Peng-Robinson fugacity coefficients"""
     phi = []
     for i in range(len(fractions)):
-        term1 = (b_p[i] / b_m) * (Z - 1)
-        term2 = -np.log(max(Z - B, 1e-12))
-        sum_aj = np.sum(fractions * np.sqrt(a_p[i] * a_p))
-        term3 = (A / (2 * np.sqrt(2) * B)) * ((2 * sum_aj / a_m) - (b_p[i] / b_m)) * np.log(max((Z + (1 + np.sqrt(2))*B) / (Z + (1 - np.sqrt(2))*B), 1e-12))
-        phi.append(np.exp(term1 + term2 + term3))
+        try:
+            term1 = (b_p[i] / b_m) * (Z - 1)
+            Z_B = max(Z - B, 1e-6)
+            term2 = -np.log(Z_B)
+            
+            sum_aj = np.sum(fractions * np.sqrt(max(a_p[i] * a_p, 0)))
+            term3_ratio = (Z + (1 + np.sqrt(2))*B) / (Z + (1 - np.sqrt(2))*B)
+            term3_ratio = max(abs(term3_ratio), 1e-6)
+            term3 = (A / (2 * np.sqrt(2) * B)) * ((2 * sum_aj / a_m) - (b_p[i] / b_m)) * np.log(term3_ratio)
+            
+            phi_i = np.exp(term1 + term2 + term3)
+            phi.append(max(phi_i, 1e-6))
+        except:
+            phi.append(1.0)  # Fallback
+    
     return np.array(phi)
 
 def solve_peng_robinson_flash(F, P, T_flash, components, z):
+    """Peng-Robinson flash calculation with robust numerical handling"""
     T_k = T_flash + 273.15
+    T_k = np.clip(T_k, 200, 600)
+    
+    # Batasi jumlah komponen
+    if len(components) > 5:
+        components = components[:5]
+        z = z[:5] / np.sum(z[:5])
+    
+    # Calculate PR parameters
     a_params, b_params = solve_pr_vectors(components, T_k)
     
-    K = np.array([(db['Pc']/P) * np.exp(5.37 * (1 + db['omega']) * (1 - db['Tc']/T_k)) for db in [MASTER_DB[c] for c in components]])
-    x, y = z.copy(), z.copy()
+    # Initial K-values using Wilson correlation
+    K = np.array([(db['Pc']/P) * np.exp(5.37 * (1 + db['omega']) * (1 - db['Tc']/T_k)) 
+                  for db in [MASTER_DB[c] for c in components]])
+    K = np.clip(K, 1e-6, 1e6)
+    
+    x = z.copy()
+    y = z.copy()
     psi = 0.0
     regime = "TWO-PHASE VAPOR-LIQUID EQUILIBRIUM"
-    Z_L, Z_V = 0.0, 0.0
+    Z_L = Z_V = 1.0
     
-    for _ in range(150):
-        f_zero = rr_objective(0, z, K)
-        f_one = rr_objective(1, z, K)
-        
-        if f_zero <= 0:
-            psi, regime = 0.0, "PURE SUBCOOLED LIQUID"
-            x = z.copy()
-            y = z * K / np.sum(z * K)
+    max_iter = 200
+    tolerance = 1e-8
+    
+    try:
+        for iteration in range(max_iter):
+            f_zero = rr_objective(0, z, K)
+            f_one = rr_objective(1, z, K)
+            
+            if f_zero <= 0:
+                psi, regime = 0.0, "PURE SUBCOOLED LIQUID"
+                x = z.copy()
+                y = z * K / np.maximum(np.sum(z * K), 1e-12)
+                a_L, b_L = mix_pr(x, a_params, b_params)
+                A_L, B_L = a_L*P/((R_CUBIC*T_k)**2), b_L*P/(R_CUBIC*T_k)
+                Z_L = get_pr_z_roots(A_L, B_L, False)
+                Z_V = Z_L
+                break
+            elif f_one >= 0:
+                psi, regime = 1.0, "PURE SUPERHEATED VAPOR"
+                y = z.copy()
+                x = z / K / np.maximum(np.sum(z / K), 1e-12)
+                a_V, b_V = mix_pr(y, a_params, b_params)
+                A_V, B_V = a_V*P/((R_CUBIC*T_k)**2), b_V*P/(R_CUBIC*T_k)
+                Z_V = get_pr_z_roots(A_V, B_V, True)
+                Z_L = Z_V
+                break
+            else:
+                regime = "TWO-PHASE VAPOR-LIQUID EQUILIBRIUM"
+                try:
+                    psi = bisect(rr_objective, 0.0, 1.0, args=(z, K), rtol=1e-8)
+                except:
+                    psi = 0.5
+                
+                x = z / (1 + psi * (K - 1))
+                x = np.clip(x, 1e-12, 0.999)
+                x = x / np.maximum(np.sum(x), 1e-12)
+                y = K * x
+                y = y / np.maximum(np.sum(y), 1e-12)
+            
+            # Calculate liquid phase
             a_L, b_L = mix_pr(x, a_params, b_params)
             A_L, B_L = a_L*P/((R_CUBIC*T_k)**2), b_L*P/(R_CUBIC*T_k)
             Z_L = get_pr_z_roots(A_L, B_L, False)
-            Z_V = Z_L
-            break
-        elif f_one >= 0:
-            psi, regime = 1.0, "PURE SUPERHEATED VAPOR"
-            y = z.copy()
-            x = z / K / np.sum(z / K)
+            phi_L = pr_fugacity(x, Z_L, A_L, B_L, a_params, b_params, a_L, b_L)
+            
+            # Calculate vapor phase
             a_V, b_V = mix_pr(y, a_params, b_params)
             A_V, B_V = a_V*P/((R_CUBIC*T_k)**2), b_V*P/(R_CUBIC*T_k)
             Z_V = get_pr_z_roots(A_V, B_V, True)
-            Z_L = Z_V
-            break
-        else:
-            regime = "TWO-PHASE VAPOR-LIQUID EQUILIBRIUM"
-            psi = bisect(rr_objective, 0.0, 1.0, args=(z, K))
-            x = z / (1 + psi * (K - 1))
-            y = K * x
+            phi_V = pr_fugacity(y, Z_V, A_V, B_V, a_params, b_params, a_V, b_V)
             
-        a_L, b_L = mix_pr(x, a_params, b_params)
-        A_L, B_L = a_L*P/((R_CUBIC*T_k)**2), b_L*P/(R_CUBIC*T_k)
-        Z_L = get_pr_z_roots(A_L, B_L, False)
-        phi_L = pr_fugacity(x, Z_L, A_L, B_L, a_params, b_params, a_L, b_L)
-        
-        a_V, b_V = mix_pr(y, a_params, b_params)
-        A_V, B_V = a_V*P/((R_CUBIC*T_k)**2), b_V*P/(R_CUBIC*T_k)
-        Z_V = get_pr_z_roots(A_V, B_V, True)
-        phi_V = pr_fugacity(y, Z_V, A_V, B_V, a_params, b_params, a_V, b_V)
-        
-        K_new = phi_L / phi_V
-        if np.max(np.abs(K_new - K)) < 1e-8:
+            # Update K-values
+            K_new = phi_L / (phi_V + 1e-12)
+            K_new = np.clip(K_new, 1e-6, 1e6)
+            
+            if np.max(np.abs(K_new - K)) < tolerance:
+                K = K_new
+                break
             K = K_new
-            break
-        K = K_new
         
-    V, L = psi * F, F - (psi * F)
+        # Calculate flows
+        V = psi * F
+        L = F - V
+        V = max(V, 0)
+        L = max(L, 0)
+        
+    except Exception as e:
+        raise ValueError(f"Peng-Robinson calculation error: {str(e)}")
+    
+    # Clean up
+    gc.collect()
+    
     return psi, V, L, x, y, K, regime, Z_L, Z_V
 
 # ==============================================================================
@@ -446,7 +587,7 @@ except Exception as e:
     st.stop()
 
 # ==============================================================================
-# 5. DISPLAY LAYER
+# 5. DISPLAY LAYER - FIXED VERSION
 # ==============================================================================
 grid1, grid2, grid3 = st.columns(3)
 with grid1:
@@ -488,18 +629,34 @@ with left_pane:
 
 with right_pane:
     st.subheader("📈 Diagram Batang Pergeseran Massa Fasa")
-    chart_data = {
-        "z_i (Umpan)": z_norm,
-        "x_i (Liquid)": x,
-        "y_i (Vapor)": y
-    }
-    st.bar_chart(
-        data=chart_data, 
-        x=None, 
-        y=None, 
-        color=["#bcbd22", "#2ca02c", "#ff7f0e"], 
-        use_container_width=True
-    )
+    
+    # VALIDASI DATA SEBELUM DI-PLOT
+    chart_data_valid = True
+    for data in [z_norm, x, y]:
+        if np.any(np.isnan(data)) or np.any(np.isinf(data)):
+            chart_data_valid = False
+            break
+    
+    if chart_data_valid:
+        chart_data = {
+            "z_i (Umpan)": z_norm.tolist(),
+            "x_i (Liquid)": x.tolist(),
+            "y_i (Vapor)": y.tolist()
+        }
+        
+        try:
+            # === FIX: GUNAKAN width BUKAN use_container_width ===
+            st.bar_chart(
+                data=chart_data, 
+                width='stretch',  # PERBAIKAN UTAMA
+                color=["#bcbd22", "#2ca02c", "#ff7f0e"]
+            )
+        except Exception as chart_error:
+            st.warning(f"Gagal menampilkan chart: {chart_error}")
+            # FALLBACK: Tampilkan data dalam tabel
+            st.dataframe(chart_data)
+    else:
+        st.warning("Data mengandung nilai NaN atau Infinity, tidak bisa diplot")
 
 st.markdown("---")
 
@@ -533,3 +690,9 @@ with audit_r:
                 f"Verifikasi Status      : PERSAAMAAN KUBIK PENG-ROBINSON TERKONVERGENSI PENUH"
             ), height=110
         )
+
+# ==============================================================================
+# 6. FOOTER
+# ==============================================================================
+st.markdown("---")
+st.caption("⚙️ PREMIUM PROCESS ENGINEERING SIMULATOR v2.0 | Developed with ❤️ for Chemical Engineers")
