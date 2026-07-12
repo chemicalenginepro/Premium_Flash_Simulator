@@ -9,46 +9,78 @@ from datetime import datetime
 import traceback
 import logging
 from typing import Dict, List, Tuple, Optional, Any
+from enum import Enum
 
 # ==============================================================================
-# ERROR TRACKING SYSTEM
+# ENHANCED ERROR TRACKING SYSTEM WITH LOG LEVELS
 # ==============================================================================
+
+class LogLevel(Enum):
+    """Level logging untuk membedakan jenis event"""
+    INFO = "ℹ️ INFO"
+    WARNING = "⚠️ WARNING"
+    ERROR = "❌ ERROR"
+    DEBUG = "🔍 DEBUG"
+    SUCCESS = "✅ SUCCESS"
+    FIX = "🔧 FIX"
+
 class ErrorTracker:
-    """Sistem tracking kesalahan untuk menangkap dan menganalisis error saat switch mode"""
+    """Sistem tracking kesalahan dengan level log yang lebih baik"""
     
     def __init__(self):
-        self.error_log = []
+        self.log_entries = []  # Semua log entries
         self.error_count = 0
+        self.warning_count = 0
+        self.fix_count = 0
+        self.info_count = 0
         self.last_error = None
         self.stack_traces = []
+        self.show_debug = False  # Toggle untuk debug info
         
-    def log_error(self, error_type: str, error_message: str, stack_trace: str = None, context: Dict = None):
-        """Mencatat error dengan detail lengkap"""
-        error_entry = {
+    def log_event(self, level: LogLevel, event_type: str, message: str, 
+                  stack_trace: str = None, context: Dict = None):
+        """Mencatat event dengan level yang ditentukan"""
+        
+        log_entry = {
             "timestamp": datetime.now().isoformat(),
-            "type": error_type,
-            "message": error_message,
+            "level": level.value,
+            "level_code": level.name,
+            "type": event_type,
+            "message": message,
             "stack_trace": stack_trace,
             "context": context or {},
-            "session_state_snapshot": self._capture_session_state()
+            "session_state_snapshot": self._capture_session_state() if level in [LogLevel.ERROR, LogLevel.DEBUG] else None
         }
-        self.error_log.append(error_entry)
-        self.error_count += 1
-        self.last_error = error_entry
         
-        # Log ke console untuk debugging
-        logging.error(f"[ERROR TRACKER] {error_type}: {error_message}")
-        if stack_trace:
+        self.log_entries.append(log_entry)
+        
+        # Update counters based on level
+        if level == LogLevel.ERROR:
+            self.error_count += 1
+            self.last_error = log_entry
+            logging.error(f"[ERROR] {event_type}: {message}")
+        elif level == LogLevel.WARNING:
+            self.warning_count += 1
+            logging.warning(f"[WARNING] {event_type}: {message}")
+        elif level == LogLevel.FIX:
+            self.fix_count += 1
+            logging.info(f"[FIX] {event_type}: {message}")
+        elif level == LogLevel.SUCCESS:
+            logging.info(f"[SUCCESS] {event_type}: {message}")
+        else:
+            self.info_count += 1
+            logging.info(f"[{level.name}] {event_type}: {message}")
+        
+        if stack_trace and level == LogLevel.ERROR:
             logging.error(f"Stack trace: {stack_trace}")
             
-        return error_entry
+        return log_entry
     
     def _capture_session_state(self) -> Dict:
         """Mengambil snapshot session state untuk debugging"""
         snapshot = {}
         try:
             for key in st.session_state.keys():
-                # Hindari mengambil data yang terlalu besar
                 if key not in ['_widgets', '_form_submitted']:
                     try:
                         value = st.session_state[key]
@@ -62,37 +94,100 @@ class ErrorTracker:
             snapshot["error"] = "Unable to capture session state"
         return snapshot
     
-    def get_error_summary(self) -> Dict:
-        """Mendapatkan ringkasan error"""
+    def get_summary(self) -> Dict:
+        """Mendapatkan ringkasan semua log"""
         return {
-            "total_errors": self.error_count,
+            "total_entries": len(self.log_entries),
+            "errors": self.error_count,
+            "warnings": self.warning_count,
+            "fixes": self.fix_count,
+            "info": self.info_count,
             "last_error": self.last_error,
-            "error_types": list(set([e['type'] for e in self.error_log])),
-            "recent_errors": self.error_log[-5:] if self.error_log else []
+            "has_critical_errors": self.error_count > 0
         }
     
-    def clear_errors(self):
-        """Membersihkan log error"""
-        self.error_log = []
+    def get_errors_only(self) -> List:
+        """Mendapatkan hanya error entries"""
+        return [e for e in self.log_entries if e['level_code'] == 'ERROR']
+    
+    def get_warnings_only(self) -> List:
+        """Mendapatkan hanya warning entries"""
+        return [e for e in self.log_entries if e['level_code'] == 'WARNING']
+    
+    def get_fixes_only(self) -> List:
+        """Mendapatkan hanya fix entries"""
+        return [e for e in self.log_entries if e['level_code'] == 'FIX']
+    
+    def clear_logs(self):
+        """Membersihkan semua log"""
+        self.log_entries = []
         self.error_count = 0
+        self.warning_count = 0
+        self.fix_count = 0
+        self.info_count = 0
         self.last_error = None
+    
+    def display_log_report(self, show_all: bool = False):
+        """Menampilkan laporan log di UI dengan level yang sesuai"""
         
-    def display_error_report(self):
-        """Menampilkan laporan error di UI"""
-        if self.error_count > 0:
-            st.error(f"⚠️ {self.error_count} Error(s) Terdeteksi")
+        summary = self.get_summary()
+        
+        # Tampilkan ringkasan dengan warna yang sesuai
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("✅ Success/Info", self.info_count + sum(1 for e in self.log_entries if e['level_code'] == 'SUCCESS'))
+        with col2:
+            st.metric("🔧 Fixes Applied", self.fix_count)
+        with col3:
+            st.metric("⚠️ Warnings", self.warning_count)
+        with col4:
+            color = "inverse" if self.error_count > 0 else "off"
+            st.metric("❌ Errors", self.error_count, delta_color=color)
+        
+        # Tampilkan log entries dengan grouping
+        if self.log_entries:
+            # Group by level
+            error_entries = self.get_errors_only()
+            warning_entries = self.get_warnings_only()
+            fix_entries = self.get_fixes_only()
+            other_entries = [e for e in self.log_entries 
+                           if e['level_code'] not in ['ERROR', 'WARNING', 'FIX']]
             
-            with st.expander("📋 Detail Error Log", expanded=False):
-                for i, error in enumerate(self.error_log[-10:]):  # Tampilkan 10 error terakhir
-                    st.markdown(f"**Error #{i+1}** ({error['timestamp']})")
-                    st.markdown(f"- **Type:** `{error['type']}`")
-                    st.markdown(f"- **Message:** {error['message']}")
-                    if error.get('stack_trace'):
-                        with st.expander("🔍 Stack Trace"):
-                            st.code(error['stack_trace'], language="python")
-                    if error.get('context'):
-                        st.json(error['context'])
-                    st.markdown("---")
+            # Display ERRORS first (most critical)
+            if error_entries:
+                st.subheader("❌ Critical Errors")
+                for entry in error_entries[-5:]:  # Show last 5 errors
+                    with st.expander(f"Error: {entry['type']} ({entry['timestamp']})"):
+                        st.error(entry['message'])
+                        if entry.get('context'):
+                            st.json(entry['context'])
+                        if entry.get('stack_trace'):
+                            st.code(entry['stack_trace'], language="python")
+            
+            # Display WARNINGS
+            if warning_entries:
+                st.subheader("⚠️ Warnings")
+                for entry in warning_entries[-5:]:
+                    with st.expander(f"Warning: {entry['type']}"):
+                        st.warning(entry['message'])
+                        if entry.get('context'):
+                            st.json(entry['context'])
+            
+            # Display FIXES (these are GOOD things!)
+            if fix_entries:
+                st.subheader("🔧 Automatic Fixes Applied")
+                for entry in fix_entries[-5:]:
+                    with st.expander(f"Fix: {entry['type']}"):
+                        st.success(f"✅ {entry['message']}")
+                        if entry.get('context'):
+                            st.info("Context:")
+                            st.json(entry['context'])
+            
+            # Display other entries (INFO, SUCCESS, DEBUG)
+            if show_all and other_entries:
+                st.subheader("📋 Other Events")
+                for entry in other_entries[-10:]:
+                    st.text(f"{entry['level']} - {entry['type']}: {entry['message']}")
 
 # Inisialisasi error tracker
 if 'error_tracker' not in st.session_state:
@@ -102,7 +197,7 @@ if 'error_tracker' not in st.session_state:
 # SECURE CONFIGURATION: KONEKSI DATABASE SUPABASE
 # ==============================================================================
 SUPABASE_URL = "https://mdlwswglvslxnwymvueq.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kbHdzd2dsdnNseG53eW12dWVxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MDgzODIsImV4cCI6MjA5OTI4NDM4Mn0.mrnY9pYigBcnIR_Sjt68ja-Ipjsq8a7Sklli72Y-5Rw"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kbHdzd2dsdnNseG53eW12dWVxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MDgzODIsImV4cCI6MjA5OTI4NDM4Mn0.mrnY9pYigBcnIR_Sjt68ja-Ipjsq8a7Sklli72Y-5Rw"
 
 def check_database_auth(username, password):
     headers = {
@@ -597,15 +692,16 @@ st.markdown("---")
 # 5a. FIXED: STATE INITIALIZATION WITH COMPLETE RESET MECHANISM
 # ==============================================================================
 
-# === STATE MANAGEMENT WITH ERROR TRACKING ===
+# === STATE MANAGEMENT WITH ENHANCED LOGGING ===
 def safe_session_state_get(key, default=None):
-    """Safe wrapper untuk mendapatkan nilai dari session state dengan error tracking"""
+    """Safe wrapper untuk mendapatkan nilai dari session state dengan logging"""
     try:
         return st.session_state.get(key, default)
     except Exception as e:
         error_tracker = st.session_state.get('error_tracker')
         if error_tracker:
-            error_tracker.log_error(
+            error_tracker.log_event(
+                LogLevel.ERROR,
                 "SESSION_STATE_GET_ERROR",
                 f"Error accessing key '{key}': {str(e)}",
                 traceback.format_exc(),
@@ -614,14 +710,15 @@ def safe_session_state_get(key, default=None):
         return default
 
 def safe_session_state_set(key, value):
-    """Safe wrapper untuk mengatur nilai di session state dengan error tracking"""
+    """Safe wrapper untuk mengatur nilai di session state dengan logging"""
     try:
         st.session_state[key] = value
         return True
     except Exception as e:
         error_tracker = st.session_state.get('error_tracker')
         if error_tracker:
-            error_tracker.log_error(
+            error_tracker.log_event(
+                LogLevel.ERROR,
                 "SESSION_STATE_SET_ERROR",
                 f"Error setting key '{key}': {str(e)}",
                 traceback.format_exc(),
@@ -637,11 +734,12 @@ def reset_session_state_for_mode(target_mode):
     try:
         error_tracker = st.session_state.get('error_tracker')
         
-        # Log the reset operation
+        # Log the reset operation as INFO (not ERROR)
         if error_tracker:
-            error_tracker.log_error(
-                "MODE_SWITCH",
-                f"Switching to mode: {target_mode}",
+            error_tracker.log_event(
+                LogLevel.INFO,
+                "MODE_SWITCH_INITIATED",
+                f"Initiating switch to mode: {target_mode}",
                 None,
                 {"target_mode": target_mode}
             )
@@ -688,10 +786,11 @@ def reset_session_state_for_mode(target_mode):
                     del st.session_state[key]
             except Exception as e:
                 if error_tracker:
-                    error_tracker.log_error(
-                        "SESSION_STATE_DELETE_ERROR",
-                        f"Error deleting key '{key}': {str(e)}",
-                        traceback.format_exc(),
+                    error_tracker.log_event(
+                        LogLevel.WARNING,
+                        "SESSION_STATE_DELETE_WARNING",
+                        f"Could not delete key '{key}': {str(e)}",
+                        None,
                         {"key": key}
                     )
         
@@ -700,12 +799,23 @@ def reset_session_state_for_mode(target_mode):
             st.session_state['mode_switch_count'] = 0
         st.session_state['mode_switch_count'] += 1
         
+        # Log successful reset as SUCCESS
+        if error_tracker:
+            error_tracker.log_event(
+                LogLevel.SUCCESS,
+                "MODE_SWITCH_RESET_COMPLETE",
+                f"Successfully reset session state for {target_mode}",
+                None,
+                {"mode": target_mode, "deleted_keys": len(keys_to_delete)}
+            )
+        
         return mode_prefix
         
     except Exception as e:
         error_tracker = st.session_state.get('error_tracker')
         if error_tracker:
-            error_tracker.log_error(
+            error_tracker.log_event(
+                LogLevel.ERROR,
                 "RESET_SESSION_ERROR",
                 f"Critical error during session reset: {str(e)}",
                 traceback.format_exc(),
@@ -714,13 +824,21 @@ def reset_session_state_for_mode(target_mode):
         raise
 
 def initialize_nrtl_defaults():
-    """Set default values for NRTL mode with error handling"""
+    """Set default values for NRTL mode dengan logging"""
     try:
         error_tracker = st.session_state.get('error_tracker')
         
         # Only initialize if not already set
         if 'selected_comps_nrtl' not in st.session_state:
             st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
+            if error_tracker:
+                error_tracker.log_event(
+                    LogLevel.FIX,  # Menggunakan FIX bukan ERROR
+                    "INIT_NRTL_FIX",
+                    "Added missing 'selected_comps_nrtl' with default values",
+                    None,
+                    {"defaults": ['ETHANOL', 'WATER']}
+                )
         
         if 'F_input' not in st.session_state:
             st.session_state['F_input'] = 100.0
@@ -743,11 +861,20 @@ def initialize_nrtl_defaults():
         # Remove PR-specific keys that might exist
         if 'selected_comps_pr' in st.session_state:
             del st.session_state['selected_comps_pr']
+            if error_tracker:
+                error_tracker.log_event(
+                    LogLevel.FIX,
+                    "CLEAN_PR_KEYS",
+                    "Removed inconsistent PR-specific keys during NRTL mode",
+                    None,
+                    {"removed_keys": ['selected_comps_pr']}
+                )
             
     except Exception as e:
         error_tracker = st.session_state.get('error_tracker')
         if error_tracker:
-            error_tracker.log_error(
+            error_tracker.log_event(
+                LogLevel.ERROR,
                 "INIT_NRTL_ERROR",
                 f"Error initializing NRTL defaults: {str(e)}",
                 traceback.format_exc()
@@ -755,13 +882,21 @@ def initialize_nrtl_defaults():
         raise
 
 def initialize_pr_defaults():
-    """Set default values for Peng-Robinson mode with error handling"""
+    """Set default values for Peng-Robinson mode dengan logging"""
     try:
         error_tracker = st.session_state.get('error_tracker')
         
         # Only initialize if not already set
         if 'selected_comps_pr' not in st.session_state:
             st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
+            if error_tracker:
+                error_tracker.log_event(
+                    LogLevel.FIX,  # Menggunakan FIX bukan ERROR
+                    "INIT_PR_FIX",
+                    "Added missing 'selected_comps_pr' with default values",
+                    None,
+                    {"defaults": ['PROPANE', 'N-BUTANE']}
+                )
         
         if 'F_input' not in st.session_state:
             st.session_state['F_input'] = 100.0
@@ -781,13 +916,22 @@ def initialize_pr_defaults():
         # Remove NRTL-specific keys that might exist
         if 'selected_comps_nrtl' in st.session_state:
             del st.session_state['selected_comps_nrtl']
+            if error_tracker:
+                error_tracker.log_event(
+                    LogLevel.FIX,
+                    "CLEAN_NRTL_KEYS",
+                    "Removed inconsistent NRTL-specific keys during PR mode",
+                    None,
+                    {"removed_keys": ['selected_comps_nrtl']}
+                )
         if 'T_feed_input' in st.session_state:
             del st.session_state['T_feed_input']
             
     except Exception as e:
         error_tracker = st.session_state.get('error_tracker')
         if error_tracker:
-            error_tracker.log_error(
+            error_tracker.log_event(
+                LogLevel.ERROR,
                 "INIT_PR_ERROR",
                 f"Error initializing PR defaults: {str(e)}",
                 traceback.format_exc()
@@ -795,10 +939,11 @@ def initialize_pr_defaults():
         raise
 
 def check_and_fix_state_consistency():
-    """Memastikan konsistensi state dan memperbaiki ketidaksesuaian"""
+    """Memastikan konsistensi state dan memperbaiki ketidaksesuaian dengan logging yang tepat"""
     try:
         error_tracker = st.session_state.get('error_tracker')
         issues_found = []
+        fixes_applied = []
         
         # Check model type consistency
         model_type = st.session_state.get('model_type', "NRTL (Sistem Cairan Non-Ideal/Polar)")
@@ -807,30 +952,31 @@ def check_and_fix_state_consistency():
             # Check NRTL-specific keys exist
             if 'selected_comps_nrtl' not in st.session_state:
                 st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
-                issues_found.append("Added missing selected_comps_nrtl")
+                fixes_applied.append("Added missing selected_comps_nrtl")
             
             # Remove PR-specific keys if they exist (inconsistent)
             if 'selected_comps_pr' in st.session_state:
                 del st.session_state['selected_comps_pr']
-                issues_found.append("Removed inconsistent selected_comps_pr")
+                fixes_applied.append("Removed inconsistent selected_comps_pr")
                 
         else:
             # Peng-Robinson mode
             if 'selected_comps_pr' not in st.session_state:
                 st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
-                issues_found.append("Added missing selected_comps_pr")
+                fixes_applied.append("Added missing selected_comps_pr")
             
             if 'selected_comps_nrtl' in st.session_state:
                 del st.session_state['selected_comps_nrtl']
-                issues_found.append("Removed inconsistent selected_comps_nrtl")
+                fixes_applied.append("Removed inconsistent selected_comps_nrtl")
         
-        # Log any fixes applied
-        if issues_found and error_tracker:
-            error_tracker.log_error(
+        # Log fixes applied (as FIX level, not ERROR)
+        if fixes_applied and error_tracker:
+            error_tracker.log_event(
+                LogLevel.FIX,  # Klasifikasi FIX (bukan ERROR)
                 "STATE_CONSISTENCY_FIX",
-                f"Fixed state inconsistencies: {', '.join(issues_found)}",
+                f"Fixed {len(fixes_applied)} state inconsistency(ies)",
                 None,
-                {"issues": issues_found}
+                {"fixes": fixes_applied}
             )
             
         return True
@@ -838,7 +984,8 @@ def check_and_fix_state_consistency():
     except Exception as e:
         error_tracker = st.session_state.get('error_tracker')
         if error_tracker:
-            error_tracker.log_error(
+            error_tracker.log_event(
+                LogLevel.ERROR,
                 "STATE_CONSISTENCY_CHECK_ERROR",
                 f"Error checking state consistency: {str(e)}",
                 traceback.format_exc()
@@ -859,7 +1006,7 @@ if 'reset_triggered' not in st.session_state:
 check_and_fix_state_consistency()
 
 # ==============================================================================
-# 5b. FIXED: SWITCH MODE WITH COMPLETE RESET AND ERROR TRACKING
+# 5b. FIXED: SWITCH MODE WITH COMPLETE RESET AND LOGGING
 # ==============================================================================
 
 try:
@@ -873,7 +1020,8 @@ try:
 except Exception as e:
     error_tracker = st.session_state.get('error_tracker')
     if error_tracker:
-        error_tracker.log_error(
+        error_tracker.log_event(
+            LogLevel.ERROR,
             "MODEL_SELECTOR_ERROR",
             f"Error creating model selector: {str(e)}",
             traceback.format_exc()
@@ -887,7 +1035,8 @@ if model_type != st.session_state.get('last_model_type', ''):
         # Log the mode change attempt
         error_tracker = st.session_state.get('error_tracker')
         if error_tracker:
-            error_tracker.log_error(
+            error_tracker.log_event(
+                LogLevel.INFO,
                 "MODE_CHANGE_ATTEMPT",
                 f"Attempting to switch from '{st.session_state.get('last_model_type')}' to '{model_type}'",
                 None,
@@ -912,7 +1061,8 @@ if model_type != st.session_state.get('last_model_type', ''):
         
         # Log successful switch
         if error_tracker:
-            error_tracker.log_error(
+            error_tracker.log_event(
+                LogLevel.SUCCESS,
                 "MODE_CHANGE_SUCCESS",
                 f"Successfully switched to '{model_type}'",
                 None,
@@ -925,7 +1075,8 @@ if model_type != st.session_state.get('last_model_type', ''):
     except Exception as e:
         error_tracker = st.session_state.get('error_tracker')
         if error_tracker:
-            error_tracker.log_error(
+            error_tracker.log_event(
+                LogLevel.ERROR,
                 "MODE_CHANGE_ERROR",
                 f"Critical error during mode switch: {str(e)}",
                 traceback.format_exc(),
@@ -1038,7 +1189,8 @@ try:
 except Exception as e:
     error_tracker = st.session_state.get('error_tracker')
     if error_tracker:
-        error_tracker.log_error(
+        error_tracker.log_event(
+            LogLevel.ERROR,
             "COMPONENT_SELECTION_ERROR",
             f"Error in component selection: {str(e)}",
             traceback.format_exc(),
@@ -1084,7 +1236,8 @@ try:
 except Exception as e:
     error_tracker = st.session_state.get('error_tracker')
     if error_tracker:
-        error_tracker.log_error(
+        error_tracker.log_event(
+            LogLevel.ERROR,
             "COMPOSITION_INPUT_ERROR",
             f"Error in composition input: {str(e)}",
             traceback.format_exc(),
@@ -1131,7 +1284,8 @@ try:
 except Exception as e:
     error_tracker = st.session_state.get('error_tracker')
     if error_tracker:
-        error_tracker.log_error(
+        error_tracker.log_event(
+            LogLevel.ERROR,
             "FLASH_CALCULATION_ERROR",
             f"Error in flash calculation: {str(e)}",
             traceback.format_exc(),
@@ -1170,7 +1324,8 @@ try:
 except Exception as e:
     error_tracker = st.session_state.get('error_tracker')
     if error_tracker:
-        error_tracker.log_error(
+        error_tracker.log_event(
+            LogLevel.ERROR,
             "VALIDATION_ERROR",
             f"Error during validation: {str(e)}",
             traceback.format_exc()
@@ -1210,13 +1365,24 @@ with grid4:
 
 st.markdown("---")
 
-# === ERROR TRACKER DISPLAY ===
+# === LOG TRACKER DISPLAY (Improved) ===
 error_tracker = st.session_state.get('error_tracker')
-if error_tracker and error_tracker.error_count > 0:
-    st.warning(f"⚠️ {error_tracker.error_count} error(s) telah terjadi selama sesi ini.")
-    if st.button("📋 Tampilkan Detail Error"):
-        with st.expander("🔍 Detailed Error Report", expanded=True):
-            error_tracker.display_error_report()
+if error_tracker:
+    summary = error_tracker.get_summary()
+    
+    # Tampilkan ringkasan dengan warna yang sesuai
+    if summary['has_critical_errors']:
+        st.error(f"⚠️ {summary['errors']} critical error(s) detected")
+    elif summary['warnings'] > 0:
+        st.warning(f"⚠️ {summary['warnings']} warning(s) detected")
+    elif summary['fixes'] > 0:
+        st.success(f"🔧 {summary['fixes']} automatic fix(es) applied successfully")
+    
+    # Tombol untuk melihat detail log
+    if st.button("📋 Tampilkan Detail Log"):
+        with st.expander("📋 System Log Report", expanded=True):
+            error_tracker.display_log_report(show_all=False)
+    
     st.markdown("---")
 
 # === VALIDATION DETAILS ===
@@ -1342,5 +1508,7 @@ with st.expander("🔧 Debug Information (Hidden)", expanded=False):
         "components": selected_comps,
         "session_state_keys": list(st.session_state.keys()),
         "error_count": error_tracker.error_count if error_tracker else 0,
+        "warning_count": error_tracker.warning_count if error_tracker else 0,
+        "fix_count": error_tracker.fix_count if error_tracker else 0,
         "mode_switch_count": st.session_state.get('mode_switch_count', 0)
     })
