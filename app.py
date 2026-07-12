@@ -133,7 +133,7 @@ R_IDEAL = 8.314462
 R_CUBIC = 8.314462e-5
 
 # ==============================================================================
-# 2. MODULE A: NRTL ENGINE - ORIGINAL FUNCTIONS (TIDAK DIUBAH)
+# 2. MODULE A: NRTL ENGINE - ORIGINAL FUNCTIONS
 # ==============================================================================
 def calculate_nrtl_gamma(x_vec, T_kelvin):
     x1 = max(x_vec[0], 1e-12)
@@ -160,7 +160,7 @@ def rr_objective(psi, z, K):
     return np.sum(z * (K - 1) / (1 + psi * (K - 1)))
 
 # ==============================================================================
-# 2a. MODULE A: NRTL ENGINE - ENHANCED ROBUST SOLVER (DITAMBAHKAN/DIGANTI)
+# 2a. MODULE A: NRTL ENGINE - ENHANCED ROBUST SOLVER
 # ==============================================================================
 def solve_nrtl_flash_robust(F, P, T_flash, T_feed, components, z, max_iter=200):
     """
@@ -393,7 +393,7 @@ def solve_nrtl_flash_robust(F, P, T_flash, T_feed, components, z, max_iter=200):
 solve_nrtl_flash = solve_nrtl_flash_robust
 
 # ==============================================================================
-# 3. MODULE B: PENG-ROBINSON ENGINE (TIDAK DIUBAH)
+# 3. MODULE B: PENG-ROBINSON ENGINE
 # ==============================================================================
 def calculate_pr_alpha(T_k, Tc, omega):
     Tr = T_k / Tc
@@ -504,7 +504,7 @@ def solve_peng_robinson_flash(F, P, T_flash, components, z):
     return psi, V, L, x, y, K, regime, Z_L, Z_V
 
 # ==============================================================================
-# 4. AI VALIDATION AGENT - CHECK AND RECHECK RESULTS (TIDAK DIUBAH)
+# 4. AI VALIDATION AGENT - CHECK AND RECHECK RESULTS
 # ==============================================================================
 class ValidationAgent:
     """AI Agent untuk validasi hasil perhitungan termodinamika"""
@@ -701,73 +701,8 @@ st.title("⚡ SIMULATOR FLASH INTEGRAL PARIPURNA — CORES GABUNGAN NRTL & PENG-
 st.markdown("---")
 
 # ==============================================================================
-# 5a. FIXED: STATE INITIALIZATION WITH COMPLETE RESET MECHANISM
+# 5a. STATE INITIALIZATION
 # ==============================================================================
-def reset_session_state_for_mode(target_mode):
-    """
-    Reset all session state keys to ensure clean state when switching modes.
-    This prevents any cross-mode contamination of values.
-    """
-    # Delete ALL component-specific keys (z_*, multiselect_*, etc.)
-    keys_to_delete = []
-    for key in st.session_state.keys():
-        # Delete all z_* keys (composition inputs)
-        if key.startswith('z_'):
-            keys_to_delete.append(key)
-        # Delete all multiselect_* keys
-        elif key.startswith('multiselect_'):
-            keys_to_delete.append(key)
-        # Delete old component selection keys
-        elif key in ['selected_comps_nrtl', 'selected_comps_pr']:
-            keys_to_delete.append(key)
-        # Delete parameter input keys
-        elif key in ['F_input', 'P_input', 'T_flash_input', 'T_feed_input']:
-            keys_to_delete.append(key)
-        # Delete old model tracking keys
-        elif key in ['model_type', 'last_model_type', 'reset_triggered']:
-            # Keep these, they're needed for mode tracking
-            pass
-        else:
-            # Also delete any key that might contain old composition data
-            if isinstance(st.session_state[key], (list, np.ndarray)) and len(str(key)) > 0:
-                # Check if it looks like composition data
-                if 'comp' in key.lower() or 'z_' in key or 'x_' in key or 'y_' in key:
-                    keys_to_delete.append(key)
-    
-    # Remove duplicates
-    keys_to_delete = list(set(keys_to_delete))
-    
-    # Delete the keys
-    for key in keys_to_delete:
-        if key in st.session_state:
-            del st.session_state[key]
-
-def initialize_nrtl_defaults():
-    """Set default values for NRTL mode"""
-    st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
-    st.session_state['F_input'] = 100.0
-    st.session_state['P_input'] = 1.013
-    st.session_state['T_flash_input'] = 78.2
-    st.session_state['T_feed_input'] = 25.0
-    # Set default z values for ETHANOL and WATER
-    if 'z_ETHANOL_nrtl' not in st.session_state:
-        st.session_state['z_ETHANOL_nrtl'] = 0.5
-    if 'z_WATER_nrtl' not in st.session_state:
-        st.session_state['z_WATER_nrtl'] = 0.5
-
-def initialize_pr_defaults():
-    """Set default values for Peng-Robinson mode"""
-    st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
-    st.session_state['F_input'] = 100.0
-    st.session_state['P_input'] = 12.0
-    st.session_state['T_flash_input'] = 55.0
-    # Set default z values for PROPANE and N-BUTANE
-    if 'z_PROPANE_pr' not in st.session_state:
-        st.session_state['z_PROPANE_pr'] = 0.5
-    if 'z_N-BUTANE_pr' not in st.session_state:
-        st.session_state['z_N-BUTANE_pr'] = 0.5
-
-# Initialize model type if not present
 if 'model_type' not in st.session_state:
     st.session_state['model_type'] = "NRTL (Sistem Cairan Non-Ideal/Polar)"
 
@@ -777,51 +712,93 @@ if 'last_model_type' not in st.session_state:
 if 'reset_triggered' not in st.session_state:
     st.session_state['reset_triggered'] = False
 
+if 'pending_mode_switch' not in st.session_state:
+    st.session_state['pending_mode_switch'] = False
+
+if 'target_mode' not in st.session_state:
+    st.session_state['target_mode'] = st.session_state['model_type']
+
+if 'switch_executed' not in st.session_state:
+    st.session_state['switch_executed'] = False
+
 # ==============================================================================
-# 5b. FIXED: SWITCH MODE WITH COMPLETE RESET
+# 5b. HANDLE PENDING MODE SWITCH (DI EKSEKUSI DI AWAL SETIAP RUN)
+# ==============================================================================
+if st.session_state.get('pending_mode_switch', False):
+    target_mode = st.session_state.get('target_mode', 'NRTL')
+    
+    # Reset ALL component-specific keys
+    keys_to_delete = []
+    for key in list(st.session_state.keys()):
+        if key.startswith('z_'):
+            keys_to_delete.append(key)
+        elif key.startswith('multiselect_'):
+            keys_to_delete.append(key)
+        elif key in ['selected_comps_nrtl', 'selected_comps_pr']:
+            keys_to_delete.append(key)
+        elif key in ['F_input', 'P_input', 'T_flash_input', 'T_feed_input']:
+            keys_to_delete.append(key)
+    
+    for key in keys_to_delete:
+        if key in st.session_state:
+            del st.session_state[key]
+    
+    # Initialize defaults based on target mode
+    if "NRTL" in target_mode:
+        st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
+        st.session_state['F_input'] = 100.0
+        st.session_state['P_input'] = 1.013
+        st.session_state['T_flash_input'] = 78.2
+        st.session_state['T_feed_input'] = 25.0
+        if 'z_ETHANOL_nrtl' not in st.session_state:
+            st.session_state['z_ETHANOL_nrtl'] = 0.5
+        if 'z_WATER_nrtl' not in st.session_state:
+            st.session_state['z_WATER_nrtl'] = 0.5
+        if 'selected_comps_pr' in st.session_state:
+            del st.session_state['selected_comps_pr']
+    else:
+        st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
+        st.session_state['F_input'] = 100.0
+        st.session_state['P_input'] = 12.0
+        st.session_state['T_flash_input'] = 55.0
+        if 'z_PROPANE_pr' not in st.session_state:
+            st.session_state['z_PROPANE_pr'] = 0.5
+        if 'z_N-BUTANE_pr' not in st.session_state:
+            st.session_state['z_N-BUTANE_pr'] = 0.5
+        if 'selected_comps_nrtl' in st.session_state:
+            del st.session_state['selected_comps_nrtl']
+    
+    st.session_state['model_type'] = target_mode
+    st.session_state['last_model_type'] = target_mode
+    st.session_state['pending_mode_switch'] = False
+    st.session_state['reset_triggered'] = False
+    st.session_state['switch_executed'] = True
+
+# ==============================================================================
+# 5c. MODEL SELECTION (PROSES INPUT USER)
 # ==============================================================================
 model_type = st.sidebar.selectbox(
     "PILIH MODEL TERMODINAMIKA (ENGINE)", 
     ["NRTL (Sistem Cairan Non-Ideal/Polar)", "PENG-ROBINSON (Sistem Gas Nyata/Migas Tekanan Tinggi)"],
-    index=0 if "NRTL" in st.session_state['model_type'] else 1
+    index=0 if "NRTL" in st.session_state.get('model_type', 'NRTL') else 1
 )
 
-# Check if mode changed
-if model_type != st.session_state['last_model_type']:
-    # Store the new mode
+# ==============================================================================
+# 5d. DETEKSI PERUBAHAN MODE OLEH USER
+# ==============================================================================
+if model_type != st.session_state.get('last_model_type', ''):
+    # SET FLAG UNTUK SWITCH DI RUN BERIKUTNYA
     st.session_state['last_model_type'] = model_type
-    st.session_state['reset_triggered'] = True
-    
-    # Reset ALL session states based on target mode
-    reset_session_state_for_mode(model_type)
-    
-    # Initialize defaults for the new mode
-    if "NRTL" in model_type:
-        initialize_nrtl_defaults()
-        # Remove PR selection if exists
-        if 'selected_comps_pr' in st.session_state:
-            del st.session_state['selected_comps_pr']
-    else:
-        initialize_pr_defaults()
-        # Remove NRTL selection if exists
-        if 'selected_comps_nrtl' in st.session_state:
-            del st.session_state['selected_comps_nrtl']
-    
-    # Update the model type in session state
-    st.session_state['model_type'] = model_type
-    
-    # Force rerun to apply changes
+    st.session_state['target_mode'] = model_type
+    st.session_state['pending_mode_switch'] = True
+    st.session_state['switch_executed'] = False
     st.rerun()
 
-# If reset was triggered but mode didn't change (shouldn't happen, but safe)
-if st.session_state.get('reset_triggered', False) and model_type == st.session_state.get('last_model_type', ''):
-    st.session_state['reset_triggered'] = False
-
-# Ensure model_type is consistent
+# Update model_type di session state
 st.session_state['model_type'] = model_type
 
 # ==============================================================================
-# 5c. SIDEBAR INPUTS (Now with safe default handling)
+# 5e. SIDEBAR INPUTS
 # ==============================================================================
 st.sidebar.markdown("---")
 st.sidebar.header("📋 UTILITY & PARAMETER OPERASI")
@@ -869,21 +846,19 @@ if "NRTL" in model_type:
     )
 
 # ==============================================================================
-# 5d. COMPONENT SELECTION (Now with safe default handling)
+# 5f. COMPONENT SELECTION
 # ==============================================================================
 st.sidebar.markdown("---")
 st.sidebar.header("🧪 INPUT SPECIES COMPONENT")
 
 if "NRTL" in model_type:
     available_comps = ['ETHANOL', 'WATER', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
-    # Ensure selected_comps_nrtl exists
     if 'selected_comps_nrtl' not in st.session_state:
         st.session_state['selected_comps_nrtl'] = ['ETHANOL', 'WATER']
     default_comps = st.session_state['selected_comps_nrtl']
     mode_key = 'nrtl'
 else:
     available_comps = ['PROPANE', 'N-BUTANE', 'BENZENE', 'TOLUENE', 'ETHYLBENZENE']
-    # Ensure selected_comps_pr exists
     if 'selected_comps_pr' not in st.session_state:
         st.session_state['selected_comps_pr'] = ['PROPANE', 'N-BUTANE']
     default_comps = st.session_state['selected_comps_pr']
@@ -903,7 +878,7 @@ else:
     st.session_state['selected_comps_pr'] = selected_comps
 
 # ==============================================================================
-# 5e. COMPOSITION INPUTS (Now with safe default handling)
+# 5g. COMPOSITION INPUTS
 # ==============================================================================
 st.sidebar.subheader("Fraksi Mol Komponen Masuk (z_i)")
 
@@ -912,7 +887,6 @@ z_inputs = []
 for c in selected_comps:
     key = f"z_{c}_{mode_key}"
     if key not in st.session_state:
-        # Set default value
         default_val = 1.0 / max(len(selected_comps), 1)
         st.session_state[key] = default_val
 
@@ -930,7 +904,7 @@ for c in selected_comps:
     z_inputs.append(val)
 
 # ==============================================================================
-# 5f. VALIDATION AND EXECUTION
+# 5h. VALIDATION AND EXECUTION
 # ==============================================================================
 if len(selected_comps) < 2:
     st.error("SYSTEM CRITICAL ERROR: Perhitungan flash multi-komponen mewajibkan minimal 2 spesimen zat aktif.")
